@@ -150,23 +150,39 @@ Los datos persistentes se almacenan en `docker/volumes/`
 
 ### ⚠️ CAMBIOS REALIZADOS PARA COMPATIBILIDAD CON EASYPANEL
 
-**Fecha**: 2026-03-06
+**Fecha Inicial**: 2026-03-06  
+**Última Actualización**: 2026-03-06 (17:10)
 
 Se han realizado las siguientes modificaciones en `docker/docker-compose.yml`:
 
 1. **Nombres de Contenedores**: Todos los `container_name` han sido comentados para evitar conflictos con otros servicios en Easypanel
 2. **Puertos Expuestos**: 
-   - Solo se expone el puerto HTTP de Kong (8000) para el acceso principal
+   - ~~Solo se expone el puerto HTTP de Kong (8000) para el acceso principal~~ **ACTUALIZADO**
+   - **TODOS los puertos están comentados** - Easypanel maneja el routing internamente
    - Los puertos de Supavisor (5432, 6543) están comentados para evitar conflictos
    - El puerto HTTPS de Kong (8443) está comentado - Easypanel maneja el SSL
+   - El puerto HTTP de Kong (8000) está comentado - Easypanel enruta internamente
 3. **Networking**: Los servicios se comunican internamente usando la red de Docker Compose
 
+### Configuración en Easypanel
+
+**IMPORTANTE**: En Easypanel debes configurar:
+- **Puerto del servicio**: `8000` (puerto interno de Kong)
+- **Protocolo**: HTTP (Easypanel maneja HTTPS externamente)
+- **Dominio**: Tu dominio configurado en Easypanel
+
+Easypanel enrutará las peticiones HTTPS externas → Kong:8000 interno
+
 ### Puntos Críticos
-1. **Puertos**: Solo Kong expone el puerto 8000. Easypanel debe configurarse para enrutar a este puerto
+1. **Puertos**: NINGÚN puerto está expuesto externamente. Easypanel enruta al puerto interno 8000 de Kong
 2. **Variables de Entorno**: Configurar correctamente las variables de entorno en Easypanel (ver sección abajo)
 3. **Volúmenes**: Asegurar persistencia de datos en el VPS
 4. **Recursos**: Monitorear uso de CPU y memoria del VPS (mínimo 4GB RAM recomendado)
-5. **Networking**: Configurar correctamente el proxy inverso de Easypanel hacia Kong:8000
+5. **Networking**: Easypanel debe estar configurado para enrutar al puerto interno 8000 de Kong
+6. **Configuración del Servicio en Easypanel**:
+   - Puerto: `8000` (interno)
+   - Protocolo: HTTP
+   - Easypanel maneja HTTPS externamente
 
 ### Variables de Entorno Importantes
 
