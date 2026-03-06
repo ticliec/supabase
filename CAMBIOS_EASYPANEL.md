@@ -40,11 +40,12 @@ Easypanel detectó múltiples conflictos en la configuración de Docker Compose:
 - Información de infraestructura (Hostinger VPS + Easypanel)
 - Arquitectura y componentes
 - Variables de entorno críticas
-- Flujo de trabajo recomendado
+- Flujo de trabajo recomendado con GitHub
 - Historial de cambios
 
 **docker/EASYPANEL_DEPLOYMENT.md**
 - Guía paso a paso para desplegar en Easypanel
+- Instrucciones para subir cambios a GitHub
 - Configuración de variables de entorno
 - Configuración de dominios
 - Solución de problemas comunes
@@ -54,7 +55,56 @@ Easypanel detectó múltiples conflictos en la configuración de Docker Compose:
 **CAMBIOS_EASYPANEL.md** (este archivo)
 - Resumen de todos los cambios realizados
 
+**INSTRUCCIONES_DEPLOY.md**
+- Instrucciones detalladas para hacer commit y push
+- Guía paso a paso del proceso de despliegue
+- Explicación de qué pasa después del push
+- Solución de problemas de Git/GitHub
+
+**README_DEPLOY.md**
+- Guía rápida de despliegue
+- Checklist de verificación
+- Enlaces a documentación completa
+
+**deploy.sh** (Linux/Mac)
+- Script automatizado para hacer deploy
+- Guía interactiva paso a paso
+- Verificaciones automáticas
+
+**deploy.ps1** (Windows PowerShell)
+- Script automatizado para hacer deploy en Windows
+- Guía interactiva paso a paso
+- Verificaciones automáticas
+
 ### Próximos Pasos
+
+#### 0. Subir Cambios a GitHub (CRÍTICO)
+
+**Opción A - Script Automatizado (Recomendado)**:
+
+Linux/Mac:
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+Windows PowerShell:
+```powershell
+.\deploy.ps1
+```
+
+**Opción B - Manual**:
+
+```bash
+# Desde la raíz del proyecto
+git add .
+git commit -m "Fix: Compatibilidad con Easypanel - Eliminados container_name y ajustados puertos"
+git push origin master
+```
+
+**Easypanel detectará automáticamente los cambios y re-desplegará.**
+
+Ver **[README_DEPLOY.md](README_DEPLOY.md)** para más opciones.
 
 #### 1. Configurar Variables de Entorno
 ```bash
@@ -68,12 +118,14 @@ Luego editar `docker/.env` con:
 - Passwords seguros
 - Configuración SMTP (opcional)
 
-#### 2. Actualizar en Easypanel
+#### 2. Esperar Auto-Despliegue de Easypanel
 
-En Easypanel:
-1. Hacer clic en "Implementar" o "Rebuild"
-2. Esperar a que todos los servicios inicien (2-3 minutos)
-3. Verificar logs de cada servicio
+Después del push a GitHub:
+1. Easypanel detectará los cambios automáticamente (puede tardar 1-2 minutos)
+2. Iniciará el re-despliegue automáticamente
+3. Puedes ver el progreso en la sección de "Deployments" en Easypanel
+4. Esperar a que todos los servicios inicien (2-3 minutos adicionales)
+5. Verificar logs de cada servicio en Easypanel
 
 #### 3. Configurar Dominio
 
@@ -137,13 +189,22 @@ Servicios Internos (comunicación interna)
 - Los servicios pueden tardar 2-3 minutos en estar completamente operativos
 - Esperar a que todos los healthchecks pasen antes de usar
 
-### Archivos Modificados
+### Archivos Modificados y Creados
 
+**Modificados**:
 ```
-docker/docker-compose.yml          # Modificado (container_name y ports)
-PROJECT_CONTEXT.md                 # Creado
-docker/EASYPANEL_DEPLOYMENT.md     # Creado
-CAMBIOS_EASYPANEL.md              # Creado (este archivo)
+docker/docker-compose.yml          # Modificado (container_name y ports comentados)
+```
+
+**Creados**:
+```
+PROJECT_CONTEXT.md                 # Contexto completo del proyecto
+docker/EASYPANEL_DEPLOYMENT.md     # Guía de despliegue en Easypanel
+CAMBIOS_EASYPANEL.md              # Resumen de cambios (este archivo)
+INSTRUCCIONES_DEPLOY.md           # Instrucciones detalladas de deploy
+README_DEPLOY.md                  # Guía rápida de despliegue
+deploy.sh                         # Script de deploy para Linux/Mac
+deploy.ps1                        # Script de deploy para Windows
 ```
 
 ### Comandos Útiles

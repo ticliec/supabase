@@ -30,12 +30,22 @@ Este es el repositorio oficial de **Supabase**, una plataforma de desarrollo Pos
 - **Panel de Control**: Easypanel
 - **Tipo de Despliegue**: Self-hosted (autoalojado)
 - **Sistema Operativo**: Linux (VPS)
+- **Repositorio**: https://github.com/ticliec/supabase
+- **Auto-Despliegue**: Easypanel detecta cambios en GitHub automáticamente
+
+### Flujo de Despliegue
+1. Desarrollador hace cambios localmente
+2. Commit y push a GitHub (`git push origin master`)
+3. Easypanel detecta cambios automáticamente (webhook o polling)
+4. Easypanel re-despliega el servicio automáticamente
+5. Los servicios se reinician con la nueva configuración
 
 ### Consideraciones Importantes
 1. Este proyecto está configurado para **autoalojamiento** en lugar de usar la plataforma cloud de Supabase
 2. La configuración de Docker es crítica para el despliegue en Easypanel
 3. Se deben considerar los recursos limitados del VPS al realizar cambios
 4. Las configuraciones de red y puertos deben ser compatibles con Easypanel
+5. **Todos los cambios deben estar en GitHub** para que Easypanel los detecte
 
 ---
 
@@ -200,7 +210,28 @@ sh ./utils/generate-keys.sh
 2. ✅ Verificar el estado actual del VPS y Easypanel
 3. ✅ Hacer backup de la base de datos si es necesario
 4. ✅ Probar cambios localmente con Docker primero
-5. ✅ Revisar logs de Easypanel antes y después del despliegue
+5. ✅ Hacer commit y push a GitHub
+6. ✅ Verificar que Easypanel detecte y despliegue los cambios
+7. ✅ Revisar logs de Easypanel antes y después del despliegue
+
+### Para Realizar Cambios en Producción
+
+```bash
+# 1. Hacer cambios localmente
+# 2. Probar localmente (opcional pero recomendado)
+docker compose -f docker/docker-compose.yml up
+
+# 3. Commit de cambios
+git add .
+git commit -m "Descripción del cambio"
+
+# 4. Push a GitHub
+git push origin master
+
+# 5. Easypanel detectará automáticamente y re-desplegará
+# 6. Monitorear logs en Easypanel
+# 7. Verificar que el servicio funcione correctamente
+```
 
 ### Para Actualizaciones
 1. Revisar `docker/CHANGELOG.md` y `docker/versions.md`
@@ -262,6 +293,17 @@ pnpm dev:studio
 
 ## Historial de Cambios del Proyecto
 
+### 2026-03-06 - Scripts de Deploy Automatizados
+- **Cambio**: Creación de scripts de deploy automatizados
+- **Archivos**:
+  - `deploy.sh` - Script para Linux/Mac
+  - `deploy.ps1` - Script para Windows PowerShell
+  - `README_DEPLOY.md` - Guía rápida
+  - `INSTRUCCIONES_DEPLOY.md` - Instrucciones detalladas
+  - `INICIO_AQUI.md` - Punto de inicio para nuevos usuarios
+- **Motivo**: Facilitar el proceso de commit y push a GitHub para despliegue en Easypanel
+- **Impacto**: El proceso de deploy ahora es más simple y guiado
+
 ### 2026-03-06 - Corrección de Conflictos en Easypanel
 - **Cambio**: Modificación de `docker/docker-compose.yml` para compatibilidad con Easypanel
 - **Detalles**:
@@ -271,6 +313,7 @@ pnpm dev:studio
   - Solo se expone Kong:8000 como punto de entrada principal
 - **Motivo**: Resolver errores de "container_name is used in X" y "ports is used in X"
 - **Impacto**: Los servicios ahora usan nombres generados automáticamente por Docker Compose
+- **Repositorio**: https://github.com/ticliec/supabase
 
 ### 2026-03-06 - Creación del Contexto
 - **Cambio**: Creación del archivo de contexto del proyecto

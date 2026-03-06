@@ -2,6 +2,29 @@
 
 ## Preparación Antes del Despliegue
 
+### 0. Subir Cambios a GitHub
+
+**IMPORTANTE**: Los cambios en `docker-compose.yml` deben estar en GitHub para que Easypanel los detecte.
+
+```bash
+# Verificar cambios
+git status
+
+# Agregar archivos modificados
+git add docker/docker-compose.yml
+git add PROJECT_CONTEXT.md
+git add docker/EASYPANEL_DEPLOYMENT.md
+git add CAMBIOS_EASYPANEL.md
+
+# Commit
+git commit -m "Fix: Compatibilidad con Easypanel - Eliminados container_name y ajustados puertos"
+
+# Push a GitHub
+git push origin master
+```
+
+Easypanel detectará automáticamente los cambios y re-desplegará el servicio.
+
 ### 1. Configurar Variables de Entorno
 
 Copia el archivo de ejemplo y genera los secrets:
@@ -36,17 +59,17 @@ Los demás secrets ya fueron generados por el script `generate-keys.sh`.
 
 ## Configuración en Easypanel
 
-### Paso 1: Crear el Servicio
+### Paso 1: Verificar Configuración del Servicio
 
-1. En Easypanel, ve a tu proyecto `liec_web`
-2. Haz clic en "Servicio" → "Compose"
-3. Configura:
-   - **Nombre**: `supabase`
-   - **Fuente**: Git
-   - **URL del repositorio**: `https://github.com/ticliec/supabase`
-   - **Rama**: `master`
-   - **Ruta de compilación**: `/docker`
-   - **Archivo Docker Compose**: `docker-compose.yml`
+El servicio ya está configurado en Easypanel con:
+- **Nombre**: `supabase`
+- **Fuente**: Git (Auto-despliegue desde GitHub)
+- **URL del repositorio**: `https://github.com/ticliec/supabase`
+- **Rama**: `master` (o la rama principal)
+- **Ruta de compilación**: `/docker`
+- **Archivo Docker Compose**: `docker-compose.yml`
+
+**Importante**: Los cambios realizados en el `docker-compose.yml` deben ser commiteados y pusheados a GitHub para que Easypanel los detecte.
 
 ### Paso 2: Configurar el Dominio
 
