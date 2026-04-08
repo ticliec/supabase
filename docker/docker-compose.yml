@@ -406,7 +406,6 @@ services:
       FACE_SERVICE_URL: ${FACE_SERVICE_URL:-}
       FACE_ADMIN_API_KEY: ${FACE_ADMIN_API_KEY:-}
     command:
-    command:
       [
         "start",
         "--main-service",
