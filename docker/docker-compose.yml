@@ -146,6 +146,10 @@ services:
       GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS}
       GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM}
 
+      GOTRUE_MAILER_EXTERNAL_HOSTS: "liec-web-supabase.wxeifq.easypanel.host"
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: "/templates/recovery.html"
+      GOTRUE_MAILER_TEMPLATES_INVITE: "/templates/invite.html"
+
       # Uncomment to bypass nonce check in ID Token flow. Commonly set to true when using Google Sign In on mobile.
       # GOTRUE_EXTERNAL_SKIP_NONCE_CHECK: true
 
