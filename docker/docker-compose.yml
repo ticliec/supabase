@@ -122,8 +122,8 @@ services:
         condition: service_healthy
       analytics:
         condition: service_healthy
-    volumes:
-      - ./templates:/templates:ro,z
+      email-templates:
+        condition: service_healthy
     environment:
       GOTRUE_API_HOST: 0.0.0.0
       GOTRUE_API_PORT: 9999
@@ -162,10 +162,10 @@ services:
       GOTRUE_MAILER_URLPATHS_RECOVERY: ${MAILER_URLPATHS_RECOVERY}
       GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: ${MAILER_URLPATHS_EMAIL_CHANGE}
 
-      # Plantillas de correo personalizadas (archivos HTML montados en /templates)
-      GOTRUE_MAILER_TEMPLATES_INVITE: /templates/invite.html
-      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: /templates/confirmation.html
-      GOTRUE_MAILER_TEMPLATES_RECOVERY: /templates/recovery.html
+      # Plantillas de correo personalizadas (servidas por el sidecar email-templates)
+      GOTRUE_MAILER_TEMPLATES_INVITE: http://email-templates:80/invite.html
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://email-templates:80/confirmation.html
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: http://email-templates:80/recovery.html
 
       GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP}
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
@@ -609,6 +609,26 @@ services:
         "-c",
         "/app/bin/migrate && /app/bin/supavisor eval \"$$(cat /etc/pooler/pooler.exs)\" && /app/bin/server"
       ]
+
+  # Servidor de plantillas de correo para GoTrue (sidecar nginx)
+  email-templates:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./templates:/usr/share/nginx/html:ro,z
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:80/invite.html"
+        ]
+      timeout: 5s
+      interval: 10s
+      retries: 3
 
 volumes:
   db-config:
