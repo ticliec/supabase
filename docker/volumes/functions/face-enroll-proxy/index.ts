@@ -142,21 +142,92 @@ Deno.serve(async (req) => {
       })
     }
 
-    const body = (await req.json()) as { personal_id?: number; image_base64?: string; filename?: string }
+    const body = (await req.json()) as {
+      personal_id?: number
+      image_base64?: string
+      filename?: string
+      images?: Array<{ image_base64: string; filename?: string }>
+    }
     const pidNum = Number(body.personal_id)
-    const b64Raw = body.image_base64
-    if (
-      !Number.isInteger(pidNum) ||
-      pidNum < 1 ||
-      typeof b64Raw !== 'string' ||
-      b64Raw.length < 32
-    ) {
-      return new Response(JSON.stringify({ error: 'personal_id o imagen inválidos' }), {
+    if (!Number.isInteger(pidNum) || pidNum < 1) {
+      return new Response(JSON.stringify({ error: 'personal_id inválido' }), {
         status: 400,
         headers: { ...cors, 'Content-Type': 'application/json' },
       })
     }
     const pid = pidNum
+
+    // Multi-image enrollment (embedding fusion)
+    const imageList = body.images
+    if (Array.isArray(imageList) && imageList.length > 0) {
+      if (imageList.length > 5) {
+        return new Response(JSON.stringify({ error: 'Máximo 5 fotos por enrollment' }), {
+          status: 400,
+          headers: { ...cors, 'Content-Type': 'application/json' },
+        })
+      }
+      const fd = new FormData()
+      for (let i = 0; i < imageList.length; i++) {
+        const item = imageList[i]
+        const b64 = normalizarBase64(item.image_base64 ?? '')
+        if (b64.length < 32) {
+          return new Response(JSON.stringify({ error: `Imagen ${i + 1} inválida (base64 muy corto)` }), {
+            status: 400,
+            headers: { ...cors, 'Content-Type': 'application/json' },
+          })
+        }
+        let rawBytes: Uint8Array
+        try {
+          rawBytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+        } catch {
+          return new Response(JSON.stringify({ error: `Imagen ${i + 1} en base64 inválida` }), {
+            status: 400,
+            headers: { ...cors, 'Content-Type': 'application/json' },
+          })
+        }
+        const fn = item.filename ?? 'face.webp'
+        const isJpeg = fn.toLowerCase().endsWith('.jpg') || fn.toLowerCase().endsWith('.jpeg')
+        const mime = isJpeg ? 'image/jpeg' : 'image/webp'
+        const name = fn.includes('.') ? fn : isJpeg ? 'face.jpg' : 'face.webp'
+        fd.append('files', new Blob([rawBytes], { type: mime }), name)
+      }
+
+      const res = await fetch(`${faceUrl}/v1/enroll-multi/${pid}`, {
+        method: 'POST',
+        headers: { 'X-Admin-Key': faceAdminKey },
+        body: fd,
+      })
+
+      const text = await res.text()
+      let json: Record<string, unknown> = {}
+      try {
+        json = JSON.parse(text) as Record<string, unknown>
+      } catch {
+        json = { raw: text }
+      }
+
+      if (!res.ok) {
+        const errMsg = mensajeDesdeRespuestaApi(json, text)
+        return new Response(JSON.stringify({ error: errMsg }), {
+          status: res.status,
+          headers: { ...cors, 'Content-Type': 'application/json' },
+        })
+      }
+
+      return new Response(JSON.stringify(json), {
+        status: 200,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Single-image enrollment (legacy)
+    const b64Raw = body.image_base64
+    if (typeof b64Raw !== 'string' || b64Raw.length < 32) {
+      return new Response(JSON.stringify({ error: 'personal_id o imagen inválidos' }), {
+        status: 400,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      })
+    }
     const b64 = normalizarBase64(b64Raw)
     if (b64.length < 32) {
       return new Response(JSON.stringify({ error: 'personal_id o imagen inválidos' }), {
@@ -215,4 +286,3 @@ Deno.serve(async (req) => {
     })
   }
 })
-
