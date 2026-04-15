@@ -122,6 +122,8 @@ services:
         condition: service_healthy
       analytics:
         condition: service_healthy
+    volumes:
+      - ./templates:/templates:ro,z
     environment:
       GOTRUE_API_HOST: 0.0.0.0
       GOTRUE_API_PORT: 9999
@@ -159,6 +161,11 @@ services:
       GOTRUE_MAILER_URLPATHS_CONFIRMATION: ${MAILER_URLPATHS_CONFIRMATION}
       GOTRUE_MAILER_URLPATHS_RECOVERY: ${MAILER_URLPATHS_RECOVERY}
       GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: ${MAILER_URLPATHS_EMAIL_CHANGE}
+
+      # Plantillas de correo personalizadas (archivos HTML montados en /templates)
+      GOTRUE_MAILER_TEMPLATES_INVITE: /templates/invite.html
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: /templates/confirmation.html
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: /templates/recovery.html
 
       GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP}
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
@@ -606,3 +613,4 @@ services:
 volumes:
   db-config:
   deno-cache:
+
