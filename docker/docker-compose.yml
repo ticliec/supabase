@@ -412,6 +412,9 @@ services:
        # face-enroll-proxy (ERP reconocimiento facial → API Python). Definir en .env del stack.
       FACE_SERVICE_URL: ${FACE_SERVICE_URL:-}
       FACE_ADMIN_API_KEY: ${FACE_ADMIN_API_KEY:-}
+      # chat-tickets (Chatbot IA → OpenAI GPT-4o-mini). Definir en .env del stack.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ERP_FRONTEND_ORIGIN: ${ERP_FRONTEND_ORIGIN:-*}
     command:
       [
         "start",
@@ -633,4 +636,3 @@ services:
 volumes:
   db-config:
   deno-cache:
-
