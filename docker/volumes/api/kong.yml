@@ -266,21 +266,21 @@ services:
           - /mcp
     plugins:
       # Block access to /mcp by default
-      - name: request-termination
-        config:
-          status_code: 403
-          message: "Access is forbidden."
-      # Enable local access (danger zone!)
-      # 1. Comment out the 'request-termination' section above
-      # 2. Uncomment the entire section below, including 'deny'
-      # 3. Add your local IPs to the 'allow' list
-      #- name: cors
-      #- name: ip-restriction
+      #- name: request-termination
       #  config:
-      #    allow:
-      #      - 127.0.0.1
-      #      - ::1
-      #    deny: []
+      #    status_code: 403
+      #    message: "Access is forbidden."
+      # Enable local access (danger zone!)
+      - name: cors
+      - name: ip-restriction
+        config:
+          allow:
+            - 127.0.0.1
+            - ::1
+            # Add your Docker bridge gateway IP below (run: docker inspect supabase-kong --format '{{range .NetworkSettings.Networks}}{{println .Gateway}}{{end}}')
+            - 172.18.0.1
+          # Do not remove deny!
+          deny: []
 
   ## Protected Dashboard - catch all remaining routes
   - name: dashboard
@@ -296,3 +296,4 @@ services:
       - name: basic-auth
         config:
           hide_credentials: true
+
