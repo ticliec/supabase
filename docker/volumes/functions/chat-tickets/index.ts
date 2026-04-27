@@ -1,12 +1,12 @@
 // Supabase Edge Function: chat-tickets
 // Proxy seguro hacia OpenAI GPT-4o-mini para el chatbot de tickets.
 //
-// Supabase Cloud: supabase functions deploy chat-tickets
-// Self-hosted: copiar a volumes/functions/chat-tickets/ y reiniciar.
+// Self-hosted: esta función vive en volumes/functions/chat-tickets/
+// El router main/index.ts la despacha automáticamente por nombre.
 //
-// Secrets requeridos:
+// Variables de entorno requeridas (configuradas en docker-compose.yml → functions):
 //   - OPENAI_API_KEY
-//   - SUPABASE_URL, SUPABASE_ANON_KEY (automáticos en Supabase Cloud)
+//   - SUPABASE_URL, SUPABASE_ANON_KEY (ya configuradas)
 //   - ERP_FRONTEND_ORIGIN (opcional, default '*')
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1'
@@ -47,7 +47,12 @@ function isRateLimited(userId: string): boolean {
 
 // ── System Prompt ────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `Eres un asistente de soporte técnico y de infraestructura amigable y profesional para la empresa LIEC. Responde siempre en español.
+/** Builds the system prompt dynamically with the current classifications from DB. */
+function buildSystemPrompt(clasificaciones: Record<string, string[]>): string {
+  const ticList = (clasificaciones['TIC'] ?? []).join(', ')
+  const infraList = (clasificaciones['INFRAESTRUCTURA'] ?? []).join(', ')
+
+  return `Eres un asistente de soporte técnico y de infraestructura amigable y profesional para la empresa LIEC. Responde siempre en español.
 
 Tu objetivo es ayudar a los empleados a crear tickets de soporte. Sigue este flujo:
 
@@ -59,8 +64,8 @@ Tu objetivo es ayudar a los empleados a crear tickets de soporte. Sigue este flu
    - **Prioridad** (prioridad): BAJA, MEDIA o ALTA según la urgencia
 
 3. **Áreas y clasificaciones válidas**:
-   - **TIC**: SOFTWARE, HARDWARE, RED, CORREO, ERP, OTRO
-   - **INFRAESTRUCTURA**: AGUA, DRENAJE, ELECTRICIDAD, MOBILIARIO, LIMPIEZA, OTRO
+   - **TIC**: ${ticList}
+   - **INFRAESTRUCTURA**: ${infraList}
 
 4. **Criterios de prioridad**:
    - **ALTA**: Afecta a múltiples usuarios, detiene operaciones críticas, riesgo de seguridad, fuga de agua/gas, falla eléctrica peligrosa
@@ -98,6 +103,7 @@ Tu objetivo es ayudar a los empleados a crear tickets de soporte. Sigue este flu
     - Sé conciso pero amable en tus respuestas.
     - Si no estás seguro del área o clasificación, pregunta al usuario.
     - Después de crear un ticket, ofrece ayuda para crear otro si lo necesita.`
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -133,45 +139,49 @@ function jsonResponse(
 }
 
 /** Extract ticket_data from the AI response text if present. */
-function extractTicketData(text: string): TicketDataResponse | undefined {
+function extractTicketData(text: string, clasificaciones: Record<string, string[]>): TicketDataResponse | undefined {
   // Try ```json block first
   const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)```/)
   if (jsonBlockMatch) {
-    const parsed = tryParseTicketData(jsonBlockMatch[1].trim())
+    const parsed = tryParseTicketData(jsonBlockMatch[1].trim(), clasificaciones)
     if (parsed) return parsed
   }
 
   // Try inline JSON
   const inlineMatch = text.match(/\{[\s\S]*\}/)
   if (inlineMatch) {
-    const parsed = tryParseTicketData(inlineMatch[0])
+    const parsed = tryParseTicketData(inlineMatch[0], clasificaciones)
     if (parsed) return parsed
   }
 
   return undefined
 }
 
-function tryParseTicketData(jsonStr: string): TicketDataResponse | undefined {
+function tryParseTicketData(jsonStr: string, clasificaciones: Record<string, string[]>): TicketDataResponse | undefined {
   try {
     const data = JSON.parse(jsonStr)
     // Handle both { ticket_data: {...} } and direct {...} formats
     const td = data.ticket_data ?? data
 
     const validAreas = ['TIC', 'INFRAESTRUCTURA']
-    const validClasificaciones: Record<string, string[]> = {
-      TIC: ['SOFTWARE', 'HARDWARE', 'RED', 'CORREO', 'ERP', 'OTRO'],
-      INFRAESTRUCTURA: ['AGUA', 'DRENAJE', 'ELECTRICIDAD', 'MOBILIARIO', 'LIMPIEZA', 'OTRO'],
-    }
     const validPrioridades = ['BAJA', 'MEDIA', 'ALTA']
 
     if (
       typeof td.descripcion === 'string' &&
       td.descripcion.length >= 10 &&
       validAreas.includes(td.area) &&
-      validClasificaciones[td.area]?.includes(td.clasificacion) &&
       validPrioridades.includes(td.prioridad) &&
       typeof td.confirmado === 'boolean'
     ) {
+      // Validate classification against dynamic list
+      if (!clasificaciones[td.area]?.includes(td.clasificacion)) {
+        console.warn(
+          `[chat-tickets] Classification "${td.clasificacion}" not found in valid list for area "${td.area}". ` +
+          `Valid: [${(clasificaciones[td.area] ?? []).join(', ')}]`
+        )
+        return undefined
+      }
+
       return {
         descripcion: td.descripcion,
         area: td.area,
@@ -281,6 +291,47 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: 'Error interno del servidor.' }, 500)
     }
 
+    // ── 4b. Load dynamic classifications from DB ───────────────────────────
+
+    const serviceRoleKey = Deno.env.get('SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey || anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
+
+    // Fallback classifications in case DB query fails
+    const fallbackClasificaciones: Record<string, string[]> = {
+      TIC: ['SOFTWARE', 'HARDWARE', 'RED', 'CORREO', 'ERP', 'OTRO'],
+      INFRAESTRUCTURA: ['AGUA', 'DRENAJE', 'ELECTRICIDAD', 'MOBILIARIO', 'LIMPIEZA', 'OTRO'],
+    }
+
+    let clasificaciones = fallbackClasificaciones
+    let usedDynamicClassifications = false
+
+    try {
+      const { data: clasifRows, error: clasifErr } = await supabaseAdmin
+        .from('ticket_clasificaciones')
+        .select('area, clave')
+        .eq('activo', true)
+        .order('orden', { ascending: true })
+
+      if (clasifErr) {
+        console.warn(`[chat-tickets] DB classification query error: ${clasifErr.message}. Using fallback.`)
+      } else if (clasifRows && clasifRows.length > 0) {
+        const dynamicClasif: Record<string, string[]> = {}
+        for (const row of clasifRows) {
+          if (!dynamicClasif[row.area]) dynamicClasif[row.area] = []
+          dynamicClasif[row.area].push(row.clave)
+        }
+        clasificaciones = dynamicClasif
+        usedDynamicClassifications = true
+        console.log(`[chat-tickets] Loaded ${clasifRows.length} dynamic classifications (TIC: ${dynamicClasif['TIC']?.length ?? 0}, INFRA: ${dynamicClasif['INFRAESTRUCTURA']?.length ?? 0})`)
+      } else {
+        console.warn('[chat-tickets] No active classifications found in DB. Using fallback.')
+      }
+    } catch (err) {
+      console.warn('[chat-tickets] Failed to load classifications from DB, using fallback:', err)
+    }
+
     // ── 5. Prepare messages for OpenAI ─────────────────────────────────────
 
     // Truncate to last 20 messages
@@ -289,7 +340,7 @@ Deno.serve(async (req) => {
     const openaiMessages = [
       {
         role: 'system' as const,
-        content: `${SYSTEM_PROMPT}\n\nEl usuario se llama ${user_name}.`,
+        content: `${buildSystemPrompt(clasificaciones)}\n\nEl usuario se llama ${user_name}.`,
       },
       ...recentMessages.map((m) => ({
         role: m.role as 'user' | 'assistant',
@@ -370,7 +421,13 @@ Deno.serve(async (req) => {
 
     // ── 9. Extract ticket_data if present ──────────────────────────────────
 
-    const ticketData = extractTicketData(assistantMessage)
+    const ticketData = extractTicketData(assistantMessage, clasificaciones)
+
+    if (ticketData) {
+      console.log(
+        `[chat-tickets] ticket_data extracted | user=${user_id} area=${ticketData.area} clasif=${ticketData.clasificacion} prioridad=${ticketData.prioridad} confirmado=${ticketData.confirmado} dynamic=${usedDynamicClassifications}`,
+      )
+    }
 
     // ── 10. Build and return response ──────────────────────────────────────
 
