@@ -48,9 +48,19 @@ function isRateLimited(userId: string): boolean {
 // ── System Prompt ────────────────────────────────────────────────────────────
 
 /** Builds the system prompt dynamically with the current classifications from DB. */
-function buildSystemPrompt(clasificaciones: Record<string, string[]>): string {
-  const ticList = (clasificaciones['TIC'] ?? []).join(', ')
-  const infraList = (clasificaciones['INFRAESTRUCTURA'] ?? []).join(', ')
+function buildSystemPrompt(clasificaciones: Record<string, string[]>, contextos: Record<string, Record<string, string>>): string {
+  // Build classification lists with context/glossary when available
+  function formatClasificaciones(area: string): string {
+    const claves = clasificaciones[area] ?? []
+    const areaContextos = contextos[area] ?? {}
+    return claves.map((clave) => {
+      const ctx = areaContextos[clave]
+      return ctx ? `${clave} (${ctx})` : clave
+    }).join('; ')
+  }
+
+  const ticList = formatClasificaciones('TIC')
+  const infraList = formatClasificaciones('INFRAESTRUCTURA')
 
   return `Eres un asistente de soporte técnico y de infraestructura amigable y profesional para la empresa LIEC. Responde siempre en español.
 
@@ -63,9 +73,10 @@ Tu objetivo es ayudar a los empleados a crear tickets de soporte. Sigue este flu
    - **Clasificación** (clasificacion): una de las opciones válidas para el área detectada
    - **Prioridad** (prioridad): BAJA, MEDIA o ALTA según la urgencia
 
-3. **Áreas y clasificaciones válidas**:
+3. **Áreas y clasificaciones válidas (SOLO puedes usar estas, NO inventes otras)**:
    - **TIC**: ${ticList}
    - **INFRAESTRUCTURA**: ${infraList}
+   Si el problema no encaja claramente en ninguna clasificación específica, usa "OTRO" para el área correspondiente.
 
 4. **Criterios de prioridad**:
    - **ALTA**: Afecta a múltiples usuarios, detiene operaciones críticas, riesgo de seguridad, fuga de agua/gas, falla eléctrica peligrosa
@@ -74,20 +85,21 @@ Tu objetivo es ayudar a los empleados a crear tickets de soporte. Sigue este flu
 
 5. **Presentar resumen**: Muestra al usuario un resumen estructurado con los datos del ticket y explica brevemente por qué elegiste esa clasificación y prioridad. Pregunta si los datos son correctos y pide confirmación explícita.
 
-6. **Confirmación**: SOLO cuando el usuario confirme explícitamente (por ejemplo: "sí", "confirmo", "correcto", "de acuerdo", "adelante"), genera el bloque JSON con ticket_data y confirmado: true.
+6. **Confirmación**: Cuando el usuario confirme explícitamente (por ejemplo: "sí", "si", "confirmo", "correcto", "de acuerdo", "adelante", "ok", "dale", "va"), DEBES incluir OBLIGATORIAMENTE el bloque JSON de ticket_data en tu respuesta. Sin este bloque, el sistema NO puede crear el ticket.
 
-7. **Formato de salida con confirmación**: Cuando el usuario confirme, incluye en tu respuesta un bloque JSON con exactamente esta estructura:
+7. **Formato de salida con confirmación — OBLIGATORIO**: Cuando el usuario confirme, tu respuesta DEBE contener el siguiente bloque JSON. Es CRÍTICO que lo incluyas, de lo contrario el ticket NO se creará. Primero escribe un mensaje breve de confirmación y luego SIEMPRE incluye el bloque:
 \`\`\`json
 {
   "ticket_data": {
-    "descripcion": "Descripción detallada del problema (mínimo 10 caracteres)",
+    "descripcion": "Descripción detallada del problema reportado por el usuario (mínimo 10 caracteres)",
     "area": "TIC o INFRAESTRUCTURA",
-    "clasificacion": "Clasificación válida para el área",
+    "clasificacion": "Clasificación exacta de la lista válida para el área",
     "prioridad": "BAJA, MEDIA o ALTA",
     "confirmado": true
   }
 }
 \`\`\`
+⚠️ IMPORTANTE: Si el usuario dice "sí", "si", "confirmo", "correcto", "ok", "dale", "adelante" o cualquier afirmación después de que le mostraste el resumen, SIEMPRE debes incluir el bloque JSON anterior. Si no lo incluyes, el ticket NO se crea y el usuario tendrá una mala experiencia.
 
 8. **Casos especiales**:
    - Si la descripción es ambigua o muy corta, haz preguntas de aclaración antes de clasificar.
@@ -99,10 +111,12 @@ Tu objetivo es ayudar a los empleados a crear tickets de soporte. Sigue este flu
 
 10. **Reglas importantes**:
     - NUNCA generes el bloque JSON de ticket_data sin confirmación explícita del usuario.
+    - SIEMPRE genera el bloque JSON de ticket_data cuando el usuario confirme. Sin excepción.
     - NUNCA uses clasificaciones que no estén en la lista válida para el área.
     - Sé conciso pero amable en tus respuestas.
     - Si no estás seguro del área o clasificación, pregunta al usuario.
-    - Después de crear un ticket, ofrece ayuda para crear otro si lo necesita.`
+    - Después de crear un ticket, ofrece ayuda para crear otro si lo necesita.
+    - Si ya mostraste un resumen y el usuario responde afirmativamente, INCLUYE EL JSON. No respondas solo con texto.`
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -305,12 +319,13 @@ Deno.serve(async (req) => {
     }
 
     let clasificaciones = fallbackClasificaciones
+    let contextos: Record<string, Record<string, string>> = {}
     let usedDynamicClassifications = false
 
     try {
       const { data: clasifRows, error: clasifErr } = await supabaseAdmin
         .from('ticket_clasificaciones')
-        .select('area, clave')
+        .select('area, clave, contexto_chatbot')
         .eq('activo', true)
         .order('orden', { ascending: true })
 
@@ -318,11 +333,18 @@ Deno.serve(async (req) => {
         console.warn(`[chat-tickets] DB classification query error: ${clasifErr.message}. Using fallback.`)
       } else if (clasifRows && clasifRows.length > 0) {
         const dynamicClasif: Record<string, string[]> = {}
+        const dynamicContextos: Record<string, Record<string, string>> = {}
         for (const row of clasifRows) {
           if (!dynamicClasif[row.area]) dynamicClasif[row.area] = []
           dynamicClasif[row.area].push(row.clave)
+          // Build contextos map
+          if (row.contexto_chatbot) {
+            if (!dynamicContextos[row.area]) dynamicContextos[row.area] = {}
+            dynamicContextos[row.area][row.clave] = row.contexto_chatbot
+          }
         }
         clasificaciones = dynamicClasif
+        contextos = dynamicContextos
         usedDynamicClassifications = true
         console.log(`[chat-tickets] Loaded ${clasifRows.length} dynamic classifications (TIC: ${dynamicClasif['TIC']?.length ?? 0}, INFRA: ${dynamicClasif['INFRAESTRUCTURA']?.length ?? 0})`)
       } else {
@@ -340,7 +362,7 @@ Deno.serve(async (req) => {
     const openaiMessages = [
       {
         role: 'system' as const,
-        content: `${buildSystemPrompt(clasificaciones)}\n\nEl usuario se llama ${user_name}.`,
+        content: `${buildSystemPrompt(clasificaciones, contextos)}\n\nEl usuario se llama ${user_name}.`,
       },
       ...recentMessages.map((m) => ({
         role: m.role as 'user' | 'assistant',
@@ -447,3 +469,4 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Error interno del servidor.' }, 500)
   }
 })
+
