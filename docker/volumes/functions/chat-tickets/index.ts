@@ -1,4 +1,4 @@
-// Supabase Edge Function: chat-tickets
+// Supabase Edge Function: chat-tickets n01
 // Proxy seguro hacia OpenAI GPT-4o-mini para el chatbot de tickets.
 //
 // Self-hosted: esta función vive en volumes/functions/chat-tickets/
