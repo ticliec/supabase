@@ -167,6 +167,8 @@ services:
       GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://email-templates:80/confirmation.html
       GOTRUE_MAILER_TEMPLATES_RECOVERY: http://email-templates:80/recovery.html
 
+      GOTRUE_MAILER_EXTERNAL_HOSTS: liec-web-supabase.wxeifq.easypanel.host,liec-web-erp-liec.wxeifq.easypanel.host
+
       GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP}
       GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM}
 
