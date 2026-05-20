@@ -1,5 +1,5 @@
-// Edge Function: extrae datos estructurados de un PDF de calibración usando OpenAI Assistants API.
-// Sube el PDF directamente a OpenAI y usa file_search para leerlo.
+// Edge Function: extrae datos de un PDF de calibración usando OpenAI Responses API.
+// Usa el input type "file" que soporta PDFs nativamente con GPT-4o.
 //
 // Recibe: { storage_path: string, campos: string[] }
 // Retorna: { campos: [{ campo, valor }], confianza: number }
@@ -14,9 +14,6 @@ const corsHeaders: Record<string, string> = {
 }
 
 const BUCKET = 'erp-doc-staging'
-const OPENAI_BASE = 'https://api.openai.com/v1'
-const POLL_INTERVAL_MS = 2_000
-const MAX_POLL_MS = 55_000
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -25,329 +22,159 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-async function openaiRequest(
-  path: string,
-  apiKey: string,
-  options: RequestInit = {},
-): Promise<Response> {
-  return fetch(`${OPENAI_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'OpenAI-Beta': 'assistants=v2',
-      ...(options.headers ?? {}),
-    },
-  })
-}
-
-async function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
-
   if (req.method !== 'POST') {
     return jsonResponse({ error: 'Method not allowed' }, 405)
   }
 
-  // --- Environment variables ---
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
   const openaiApiKey = Deno.env.get('OPENAI_API_KEY')
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')
 
-  if (!supabaseUrl || !serviceRoleKey) {
-    return jsonResponse({ error: 'Server misconfigured: missing Supabase credentials' }, 500)
-  }
-  if (!openaiApiKey) {
-    return jsonResponse({ error: 'Server misconfigured: missing OPENAI_API_KEY' }, 500)
+  if (!supabaseUrl || !serviceRoleKey || !openaiApiKey || !supabaseAnonKey) {
+    return jsonResponse({ error: 'Server misconfigured' }, 500)
   }
 
-  // --- Auth check ---
+  // Auth check
   const authHeader = req.headers.get('Authorization')
   if (!authHeader?.startsWith('Bearer ')) {
     return jsonResponse({ error: 'Unauthorized' }, 401)
   }
-
-  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')
-  if (!supabaseAnonKey) {
-    return jsonResponse({ error: 'Server misconfigured' }, 500)
-  }
-
   const userClient = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } },
   })
   const { data: { user }, error: userErr } = await userClient.auth.getUser()
-  if (userErr || !user) {
-    return jsonResponse({ error: 'Unauthorized' }, 401)
-  }
+  if (userErr || !user) return jsonResponse({ error: 'Unauthorized' }, 401)
 
-  // --- Parse request body ---
+  // Parse body
   let body: { storage_path?: string; campos?: string[] }
-  try {
-    body = await req.json()
-  } catch {
-    return jsonResponse({ error: 'Invalid JSON body' }, 400)
-  }
+  try { body = await req.json() } catch { return jsonResponse({ error: 'Invalid JSON' }, 400) }
 
   const { storage_path, campos } = body
-
-  if (!storage_path || typeof storage_path !== 'string' || storage_path.trim().length === 0) {
-    return jsonResponse({ error: 'storage_path is required' }, 400)
+  if (!storage_path || typeof storage_path !== 'string') {
+    return jsonResponse({ error: 'storage_path required' }, 400)
   }
   if (!campos || !Array.isArray(campos) || campos.length === 0) {
-    return jsonResponse({ error: 'campos is required and must be a non-empty array' }, 400)
+    return jsonResponse({ error: 'campos required' }, 400)
   }
 
   const camposValidos = campos
     .filter((c): c is string => typeof c === 'string')
     .map((c) => c.trim())
     .filter((c) => c.length > 0 && c.length <= 100)
+    .slice(0, 20)
 
-  if (camposValidos.length === 0 || camposValidos.length > 20) {
-    return jsonResponse({ error: 'campos must contain 1-20 valid field names' }, 400)
+  if (camposValidos.length === 0) {
+    return jsonResponse({ error: 'At least 1 valid campo required' }, 400)
   }
 
-  // --- Download PDF from Supabase Storage ---
+  // Download PDF from Storage
   const admin = createClient(supabaseUrl, serviceRoleKey)
-  const { data: fileData, error: downloadErr } = await admin.storage
+  const { data: fileData, error: dlErr } = await admin.storage
     .from(BUCKET)
     .download(storage_path.trim())
 
-  if (downloadErr || !fileData) {
-    console.error('Storage download error:', downloadErr)
-    return jsonResponse({ error: 'Failed to download PDF from storage' }, 404)
+  if (dlErr || !fileData) {
+    return jsonResponse({ error: 'Failed to download PDF' }, 404)
   }
 
-  const pdfBytes = await fileData.arrayBuffer()
-
-  // --- Upload PDF to OpenAI Files API ---
-  let openaiFileId: string
-  try {
-    const formData = new FormData()
-    formData.append('file', new Blob([pdfBytes], { type: 'application/pdf' }), 'calibracion.pdf')
-    formData.append('purpose', 'assistants')
-
-    const uploadRes = await fetch(`${OPENAI_BASE}/files`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${openaiApiKey}` },
-      body: formData,
-    })
-
-    if (!uploadRes.ok) {
-      const errText = await uploadRes.text()
-      console.error('OpenAI file upload failed:', errText)
-      return jsonResponse({ error: 'Failed to upload PDF to AI service' }, 502)
-    }
-
-    const uploadData = await uploadRes.json()
-    openaiFileId = uploadData.id
-  } catch (err: unknown) {
-    console.error('File upload error:', err)
-    return jsonResponse({ error: 'Failed to upload PDF to AI service' }, 502)
+  // Convert to base64
+  const arrayBuffer = await fileData.arrayBuffer()
+  const bytes = new Uint8Array(arrayBuffer)
+  let base64 = ''
+  const chunkSize = 8192
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    base64 += String.fromCharCode(...bytes.slice(i, i + chunkSize))
   }
+  base64 = btoa(base64)
 
-  // --- Create Assistant (or reuse) ---
-  const assistantInstructions = `Eres un asistente especializado en extraer datos de certificados de calibración.
-Analiza el documento PDF adjunto y extrae los campos solicitados.
+  // Build prompt
+  const prompt = `Analiza este documento PDF de calibración y extrae los siguientes campos.
+Si no encuentras un campo, devuelve su valor como cadena vacía "".
+Para fechas usa formato YYYY-MM-DD.
+Para "caducidad en meses" calcula la diferencia entre fecha de vencimiento y fecha de calibración.
 
-REGLAS:
-- Extrae SOLO los campos solicitados.
-- Si no encuentras un campo, devuelve su valor como "".
-- Para fechas, usa formato YYYY-MM-DD.
-- Para "caducidad en meses", calcula la diferencia entre vencimiento y calibración si están disponibles.
-- Responde ÚNICAMENTE con JSON válido:
-  { "campos": [{ "campo": "<nombre>", "valor": "<valor>" }], "confianza": <0.0-1.0> }
-- NO incluyas explicaciones ni markdown, solo el JSON puro.`
-
-  let assistantId: string
-  try {
-    const createRes = await openaiRequest('/assistants', openaiApiKey, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4o',
-        name: 'Calibracion PDF Extractor',
-        instructions: assistantInstructions,
-        tools: [{ type: 'file_search' }],
-      }),
-    })
-
-    if (!createRes.ok) {
-      const errText = await createRes.text()
-      console.error('Assistant creation failed:', errText)
-      return jsonResponse({ error: 'Failed to create AI assistant' }, 502)
-    }
-
-    const assistantData = await createRes.json()
-    assistantId = assistantData.id
-  } catch (err: unknown) {
-    console.error('Assistant error:', err)
-    return jsonResponse({ error: 'AI service error' }, 502)
-  }
-
-  // --- Create Thread with the PDF attached ---
-  let threadId: string
-  try {
-    const userMessage = `Extrae los siguientes campos del certificado de calibración adjunto:
-
+Campos a extraer:
 ${camposValidos.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
-Responde SOLO con el JSON estructurado, sin markdown ni explicaciones.`
+RESPONDE ÚNICAMENTE con este JSON (sin markdown, sin explicaciones):
+{ "campos": [{ "campo": "nombre_campo", "valor": "valor_extraido" }], "confianza": 0.85 }`
 
-    const threadRes = await openaiRequest('/threads', openaiApiKey, {
+  // Call OpenAI Chat Completions with file input (GPT-4o supports PDF via base64)
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${openaiApiKey}`,
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
+        model: 'gpt-4o',
         messages: [
           {
             role: 'user',
-            content: userMessage,
-            attachments: [
-              { file_id: openaiFileId, tools: [{ type: 'file_search' }] },
+            content: [
+              {
+                type: 'file',
+                file: {
+                  filename: 'calibracion.pdf',
+                  file_data: `data:application/pdf;base64,${base64}`,
+                },
+              },
+              {
+                type: 'text',
+                text: prompt,
+              },
             ],
           },
         ],
+        temperature: 0.1,
+        max_tokens: 2000,
       }),
     })
 
-    if (!threadRes.ok) {
-      const errText = await threadRes.text()
-      console.error('Thread creation failed:', errText)
-      return jsonResponse({ error: 'Failed to create AI thread' }, 502)
+    if (!response.ok) {
+      const errBody = await response.text()
+      console.error('OpenAI error:', response.status, errBody)
+      return jsonResponse({ error: `AI service error (${response.status})` }, 502)
     }
 
-    const threadData = await threadRes.json()
-    threadId = threadData.id
+    const data = await response.json()
+    const content = data.choices?.[0]?.message?.content ?? ''
+
+    if (!content.trim()) {
+      return jsonResponse({ error: 'No se pudieron extraer datos del PDF.' }, 422)
+    }
+
+    // Clean markdown if present
+    let cleanJson = content.trim()
+    if (cleanJson.startsWith('```')) {
+      cleanJson = cleanJson.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '')
+    }
+
+    const parsed = JSON.parse(cleanJson)
+    const extractedCampos = Array.isArray(parsed.campos)
+      ? parsed.campos
+          .filter((item: any) => item && typeof item.campo === 'string')
+          .map((item: any) => ({ campo: item.campo, valor: String(item.valor ?? '') }))
+      : []
+
+    const confianza = typeof parsed.confianza === 'number'
+      ? Math.max(0, Math.min(1, parsed.confianza))
+      : 0
+
+    if (extractedCampos.length === 0) {
+      return jsonResponse({ error: 'No se pudieron extraer datos del PDF.' }, 422)
+    }
+
+    return jsonResponse({ campos: extractedCampos, confianza: Math.round(confianza * 100) / 100 })
   } catch (err: unknown) {
-    console.error('Thread error:', err)
-    return jsonResponse({ error: 'AI service error' }, 502)
+    console.error('Extraction error:', err)
+    const msg = err instanceof Error ? err.message : 'Unknown error'
+    return jsonResponse({ error: `Error en extracción: ${msg}` }, 502)
   }
-
-  // --- Run the Assistant ---
-  let runId: string
-  try {
-    const runRes = await openaiRequest(`/threads/${threadId}/runs`, openaiApiKey, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assistant_id: assistantId }),
-    })
-
-    if (!runRes.ok) {
-      const errText = await runRes.text()
-      console.error('Run creation failed:', errText)
-      return jsonResponse({ error: 'Failed to start AI analysis' }, 502)
-    }
-
-    const runData = await runRes.json()
-    runId = runData.id
-  } catch (err: unknown) {
-    console.error('Run error:', err)
-    return jsonResponse({ error: 'AI service error' }, 502)
-  }
-
-  // --- Poll for completion ---
-  const startTime = Date.now()
-  let runStatus = 'queued'
-
-  while (runStatus !== 'completed' && runStatus !== 'failed' && runStatus !== 'cancelled') {
-    if (Date.now() - startTime > MAX_POLL_MS) {
-      // Cleanup
-      await openaiRequest(`/threads/${threadId}/runs/${runId}/cancel`, openaiApiKey, { method: 'POST' })
-      await openaiRequest(`/assistants/${assistantId}`, openaiApiKey, { method: 'DELETE' })
-      await openaiRequest(`/files/${openaiFileId}`, openaiApiKey, { method: 'DELETE' })
-      return jsonResponse({ error: 'Tiempo de espera agotado (55s). Intente con un PDF más pequeño.' }, 504)
-    }
-
-    await delay(POLL_INTERVAL_MS)
-
-    const statusRes = await openaiRequest(`/threads/${threadId}/runs/${runId}`, openaiApiKey)
-    if (!statusRes.ok) break
-    const statusData = await statusRes.json()
-    runStatus = statusData.status
-  }
-
-  if (runStatus !== 'completed') {
-    await openaiRequest(`/assistants/${assistantId}`, openaiApiKey, { method: 'DELETE' })
-    await openaiRequest(`/files/${openaiFileId}`, openaiApiKey, { method: 'DELETE' })
-    return jsonResponse({ error: 'AI analysis failed. Please retry.' }, 502)
-  }
-
-  // --- Get messages (response) ---
-  let responseText = ''
-  try {
-    const msgsRes = await openaiRequest(`/threads/${threadId}/messages?order=desc&limit=1`, openaiApiKey)
-    if (msgsRes.ok) {
-      const msgsData = await msgsRes.json()
-      const lastMsg = msgsData.data?.[0]
-      if (lastMsg?.role === 'assistant' && lastMsg.content) {
-        for (const block of lastMsg.content) {
-          if (block.type === 'text') {
-            responseText += block.text.value
-          }
-        }
-      }
-    }
-  } catch (err: unknown) {
-    console.error('Messages fetch error:', err)
-  }
-
-  // --- Cleanup OpenAI resources ---
-  await openaiRequest(`/assistants/${assistantId}`, openaiApiKey, { method: 'DELETE' }).catch(() => {})
-  await openaiRequest(`/files/${openaiFileId}`, openaiApiKey, { method: 'DELETE' }).catch(() => {})
-
-  // --- Parse response ---
-  if (!responseText || responseText.trim().length === 0) {
-    return jsonResponse(
-      { error: 'No se pudieron extraer datos del PDF. Verifique que el contenido sea legible.' },
-      422,
-    )
-  }
-
-  // Clean markdown code blocks if present
-  let cleanJson = responseText.trim()
-  if (cleanJson.startsWith('```')) {
-    cleanJson = cleanJson.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '')
-  }
-
-  let parsed: { campos?: Array<{ campo: string; valor: string }>; confianza?: number }
-  try {
-    parsed = JSON.parse(cleanJson)
-  } catch {
-    console.error('Failed to parse AI response:', responseText)
-    return jsonResponse({ error: 'Failed to parse AI response. Please retry.' }, 422)
-  }
-
-  // Validate and normalize
-  const extractedCampos = Array.isArray(parsed.campos)
-    ? parsed.campos
-        .filter(
-          (item): item is { campo: string; valor: string } =>
-            item != null &&
-            typeof item === 'object' &&
-            typeof item.campo === 'string',
-        )
-        .map((item) => ({
-          campo: item.campo,
-          valor: typeof item.valor === 'string' ? item.valor : '',
-        }))
-    : []
-
-  const confianza = typeof parsed.confianza === 'number'
-    ? Math.max(0, Math.min(1, parsed.confianza))
-    : 0
-
-  if (extractedCampos.length === 0) {
-    return jsonResponse(
-      { error: 'No se pudieron extraer datos del PDF.' },
-      422,
-    )
-  }
-
-  return jsonResponse({
-    campos: extractedCampos,
-    confianza: Math.round(confianza * 100) / 100,
-  })
 })
