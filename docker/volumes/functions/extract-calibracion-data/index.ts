@@ -7,7 +7,6 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1'
 import OpenAI from 'https://esm.sh/openai@4'
-import * as pdfParse from 'https://esm.sh/pdf-parse@1.1.1'
 
 const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -116,14 +115,53 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Failed to download PDF from storage' }, 404)
   }
 
-  // Extract text from PDF
+  // Extract text from PDF using basic text extraction
+  // PDF text streams are between BT...ET markers or in parentheses after Tj/TJ operators
   const arrayBuffer = await fileData.arrayBuffer()
-  const uint8Array = new Uint8Array(arrayBuffer)
-
+  const bytes = new Uint8Array(arrayBuffer)
+  
   let pdfText: string
   try {
-    const pdfData = await pdfParse.default(uint8Array)
-    pdfText = pdfData.text
+    // Decode the PDF bytes as latin1 to preserve all byte values
+    const rawContent = new TextDecoder('latin1').decode(bytes)
+    
+    // Extract text from PDF streams - look for text between parentheses in text operators
+    const textParts: string[] = []
+    
+    // Method 1: Extract from stream content (decompressed text)
+    const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g
+    let streamMatch: RegExpExecArray | null
+    while ((streamMatch = streamRegex.exec(rawContent)) !== null) {
+      const streamContent = streamMatch[1]
+      // Look for text in Tj operators: (text) Tj
+      const tjRegex = /\(([^)]*)\)\s*Tj/g
+      let tjMatch: RegExpExecArray | null
+      while ((tjMatch = tjRegex.exec(streamContent)) !== null) {
+        if (tjMatch[1].trim()) textParts.push(tjMatch[1])
+      }
+      // Look for text in TJ arrays: [(text)] TJ
+      const tjArrayRegex = /\[([^\]]*)\]\s*TJ/g
+      let tjArrMatch: RegExpExecArray | null
+      while ((tjArrMatch = tjArrayRegex.exec(streamContent)) !== null) {
+        const innerRegex = /\(([^)]*)\)/g
+        let innerMatch: RegExpExecArray | null
+        while ((innerMatch = innerRegex.exec(tjArrMatch[1])) !== null) {
+          if (innerMatch[1].trim()) textParts.push(innerMatch[1])
+        }
+      }
+    }
+    
+    // Method 2: If no text found in streams, try to find readable ASCII sequences
+    if (textParts.length === 0) {
+      // Look for any readable text sequences (fallback)
+      const readableRegex = /\(([A-Za-z0-9\s.,;:!?@#$%&*+=\-/\\'"áéíóúñÁÉÍÓÚÑ]{3,})\)/g
+      let readableMatch: RegExpExecArray | null
+      while ((readableMatch = readableRegex.exec(rawContent)) !== null) {
+        textParts.push(readableMatch[1])
+      }
+    }
+    
+    pdfText = textParts.join(' ').replace(/\s+/g, ' ').trim()
   } catch (parseErr: unknown) {
     console.error('PDF parse error:', parseErr)
     return jsonResponse(
