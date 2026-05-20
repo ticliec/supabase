@@ -1,12 +1,10 @@
-// Edge Function: extrae datos estructurados de un PDF de calibración usando OpenAI API.
+// Edge Function: extrae datos estructurados de un PDF de calibración usando OpenAI Assistants API.
+// Sube el PDF directamente a OpenAI y usa file_search para leerlo.
 //
 // Recibe: { storage_path: string, campos: string[] }
 // Retorna: { campos: [{ campo, valor }], confianza: number }
-//
-// Supabase Cloud: supabase functions deploy extract-calibracion-data
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1'
-import OpenAI from 'https://esm.sh/openai@4'
 
 const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -16,13 +14,34 @@ const corsHeaders: Record<string, string> = {
 }
 
 const BUCKET = 'erp-doc-staging'
-const TIMEOUT_MS = 60_000
+const OPENAI_BASE = 'https://api.openai.com/v1'
+const POLL_INTERVAL_MS = 2_000
+const MAX_POLL_MS = 55_000
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
+}
+
+async function openaiRequest(
+  path: string,
+  apiKey: string,
+  options: RequestInit = {},
+): Promise<Response> {
+  return fetch(`${OPENAI_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'OpenAI-Beta': 'assistants=v2',
+      ...(options.headers ?? {}),
+    },
+  })
+}
+
+async function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 Deno.serve(async (req) => {
@@ -42,7 +61,6 @@ Deno.serve(async (req) => {
   if (!supabaseUrl || !serviceRoleKey) {
     return jsonResponse({ error: 'Server misconfigured: missing Supabase credentials' }, 500)
   }
-
   if (!openaiApiKey) {
     return jsonResponse({ error: 'Server misconfigured: missing OPENAI_API_KEY' }, 500)
   }
@@ -61,12 +79,7 @@ Deno.serve(async (req) => {
   const userClient = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } },
   })
-
-  const {
-    data: { user },
-    error: userErr,
-  } = await userClient.auth.getUser()
-
+  const { data: { user }, error: userErr } = await userClient.auth.getUser()
   if (userErr || !user) {
     return jsonResponse({ error: 'Unauthorized' }, 401)
   }
@@ -82,30 +95,23 @@ Deno.serve(async (req) => {
   const { storage_path, campos } = body
 
   if (!storage_path || typeof storage_path !== 'string' || storage_path.trim().length === 0) {
-    return jsonResponse({ error: 'storage_path is required and must be a non-empty string' }, 400)
+    return jsonResponse({ error: 'storage_path is required' }, 400)
   }
-
   if (!campos || !Array.isArray(campos) || campos.length === 0) {
-    return jsonResponse({ error: 'campos is required and must be a non-empty array of strings' }, 400)
+    return jsonResponse({ error: 'campos is required and must be a non-empty array' }, 400)
   }
 
-  // Validate each campo
   const camposValidos = campos
     .filter((c): c is string => typeof c === 'string')
     .map((c) => c.trim())
     .filter((c) => c.length > 0 && c.length <= 100)
 
-  if (camposValidos.length === 0) {
-    return jsonResponse({ error: 'campos must contain at least one valid field name (max 100 chars each)' }, 400)
-  }
-
-  if (camposValidos.length > 20) {
-    return jsonResponse({ error: 'campos must not exceed 20 fields' }, 400)
+  if (camposValidos.length === 0 || camposValidos.length > 20) {
+    return jsonResponse({ error: 'campos must contain 1-20 valid field names' }, 400)
   }
 
   // --- Download PDF from Supabase Storage ---
   const admin = createClient(supabaseUrl, serviceRoleKey)
-
   const { data: fileData, error: downloadErr } = await admin.storage
     .from(BUCKET)
     .download(storage_path.trim())
@@ -115,205 +121,233 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Failed to download PDF from storage' }, 404)
   }
 
-  // Extract text from PDF using basic text extraction
-  // PDF text streams are between BT...ET markers or in parentheses after Tj/TJ operators
-  const arrayBuffer = await fileData.arrayBuffer()
-  const bytes = new Uint8Array(arrayBuffer)
-  
-  let pdfText: string
+  const pdfBytes = await fileData.arrayBuffer()
+
+  // --- Upload PDF to OpenAI Files API ---
+  let openaiFileId: string
   try {
-    // Decode the PDF bytes as latin1 to preserve all byte values
-    const rawContent = new TextDecoder('latin1').decode(bytes)
-    
-    // Extract text from PDF streams - look for text between parentheses in text operators
-    const textParts: string[] = []
-    
-    // Method 1: Extract from stream content (decompressed text)
-    const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g
-    let streamMatch: RegExpExecArray | null
-    while ((streamMatch = streamRegex.exec(rawContent)) !== null) {
-      const streamContent = streamMatch[1]
-      // Look for text in Tj operators: (text) Tj
-      const tjRegex = /\(([^)]*)\)\s*Tj/g
-      let tjMatch: RegExpExecArray | null
-      while ((tjMatch = tjRegex.exec(streamContent)) !== null) {
-        if (tjMatch[1].trim()) textParts.push(tjMatch[1])
-      }
-      // Look for text in TJ arrays: [(text)] TJ
-      const tjArrayRegex = /\[([^\]]*)\]\s*TJ/g
-      let tjArrMatch: RegExpExecArray | null
-      while ((tjArrMatch = tjArrayRegex.exec(streamContent)) !== null) {
-        const innerRegex = /\(([^)]*)\)/g
-        let innerMatch: RegExpExecArray | null
-        while ((innerMatch = innerRegex.exec(tjArrMatch[1])) !== null) {
-          if (innerMatch[1].trim()) textParts.push(innerMatch[1])
-        }
-      }
+    const formData = new FormData()
+    formData.append('file', new Blob([pdfBytes], { type: 'application/pdf' }), 'calibracion.pdf')
+    formData.append('purpose', 'assistants')
+
+    const uploadRes = await fetch(`${OPENAI_BASE}/files`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${openaiApiKey}` },
+      body: formData,
+    })
+
+    if (!uploadRes.ok) {
+      const errText = await uploadRes.text()
+      console.error('OpenAI file upload failed:', errText)
+      return jsonResponse({ error: 'Failed to upload PDF to AI service' }, 502)
     }
-    
-    // Method 2: If no text found in streams, try to find readable ASCII sequences
-    if (textParts.length === 0) {
-      // Look for any readable text sequences (fallback)
-      const readableRegex = /\(([A-Za-z0-9\s.,;:!?@#$%&*+=\-/\\'"áéíóúñÁÉÍÓÚÑ]{3,})\)/g
-      let readableMatch: RegExpExecArray | null
-      while ((readableMatch = readableRegex.exec(rawContent)) !== null) {
-        textParts.push(readableMatch[1])
-      }
-    }
-    
-    pdfText = textParts.join(' ').replace(/\s+/g, ' ').trim()
-  } catch (parseErr: unknown) {
-    console.error('PDF parse error:', parseErr)
-    return jsonResponse(
-      { error: 'No se pudo leer el contenido del PDF. Verifique que el archivo no esté dañado o protegido.' },
-      422,
-    )
+
+    const uploadData = await uploadRes.json()
+    openaiFileId = uploadData.id
+  } catch (err: unknown) {
+    console.error('File upload error:', err)
+    return jsonResponse({ error: 'Failed to upload PDF to AI service' }, 502)
   }
 
-  if (!pdfText || pdfText.trim().length < 10) {
-    return jsonResponse(
-      { error: 'El PDF no contiene texto legible. Puede ser un PDF escaneado (imagen). Intente con un PDF que tenga texto seleccionable.' },
-      422,
-    )
-  }
-
-  // Truncate to ~15000 chars to stay within token limits
-  const truncatedText = pdfText.length > 15000 ? pdfText.substring(0, 15000) + '\n[...texto truncado...]' : pdfText
-
-  // --- Call OpenAI API ---
-  const openai = new OpenAI({ apiKey: openaiApiKey })
-
-  const systemPrompt = `Eres un asistente especializado en extraer datos de certificados de calibración.
-Se te proporcionará el texto extraído de un documento PDF y una lista de campos a extraer.
-Debes analizar el contenido y extraer el valor de cada campo solicitado.
+  // --- Create Assistant (or reuse) ---
+  const assistantInstructions = `Eres un asistente especializado en extraer datos de certificados de calibración.
+Analiza el documento PDF adjunto y extrae los campos solicitados.
 
 REGLAS:
 - Extrae SOLO los campos solicitados.
-- Si no encuentras un campo en el documento, devuelve su valor como cadena vacía "".
-- Para fechas, usa formato YYYY-MM-DD (ejemplo: 2025-03-15).
-- Para "caducidad en meses", calcula la diferencia entre fecha de vencimiento y fecha de calibración si están disponibles.
-- Responde ÚNICAMENTE con un JSON válido con la siguiente estructura:
-  { "campos": [{ "campo": "<nombre_campo>", "valor": "<valor_extraido>" }], "confianza": <0.0-1.0> }
-- "confianza" es un número entre 0.0 y 1.0 que indica qué tan seguro estás de la extracción general.
-- NO incluyas explicaciones, solo el JSON.`
+- Si no encuentras un campo, devuelve su valor como "".
+- Para fechas, usa formato YYYY-MM-DD.
+- Para "caducidad en meses", calcula la diferencia entre vencimiento y calibración si están disponibles.
+- Responde ÚNICAMENTE con JSON válido:
+  { "campos": [{ "campo": "<nombre>", "valor": "<valor>" }], "confianza": <0.0-1.0> }
+- NO incluyas explicaciones ni markdown, solo el JSON puro.`
 
-  const userPrompt = `Extrae los siguientes campos del texto de este certificado de calibración:
+  let assistantId: string
+  try {
+    const createRes = await openaiRequest('/assistants', openaiApiKey, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        name: 'Calibracion PDF Extractor',
+        instructions: assistantInstructions,
+        tools: [{ type: 'file_search' }],
+      }),
+    })
 
-Campos a extraer:
+    if (!createRes.ok) {
+      const errText = await createRes.text()
+      console.error('Assistant creation failed:', errText)
+      return jsonResponse({ error: 'Failed to create AI assistant' }, 502)
+    }
+
+    const assistantData = await createRes.json()
+    assistantId = assistantData.id
+  } catch (err: unknown) {
+    console.error('Assistant error:', err)
+    return jsonResponse({ error: 'AI service error' }, 502)
+  }
+
+  // --- Create Thread with the PDF attached ---
+  let threadId: string
+  try {
+    const userMessage = `Extrae los siguientes campos del certificado de calibración adjunto:
+
 ${camposValidos.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
---- TEXTO DEL DOCUMENTO ---
-${truncatedText}
---- FIN DEL DOCUMENTO ---
+Responde SOLO con el JSON estructurado, sin markdown ni explicaciones.`
 
-Responde SOLO con el JSON estructurado.`
-
-  try {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS)
-
-    const completion = await openai.chat.completions.create(
-      {
-        model: 'gpt-4o-mini',
+    const threadRes = await openaiRequest('/threads', openaiApiKey, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
+          {
+            role: 'user',
+            content: userMessage,
+            attachments: [
+              { file_id: openaiFileId, tools: [{ type: 'file_search' }] },
+            ],
+          },
         ],
-        temperature: 0.1,
-        max_tokens: 2000,
-        response_format: { type: 'json_object' },
-      },
-      { signal: controller.signal },
-    )
-
-    clearTimeout(timeoutId)
-
-    const responseContent = completion.choices?.[0]?.message?.content
-
-    if (!responseContent || responseContent.trim().length === 0) {
-      return jsonResponse(
-        { error: 'OpenAI returned an empty response. The PDF may not contain readable text.' },
-        422,
-      )
-    }
-
-    // Parse the JSON response from OpenAI
-    let parsed: { campos?: Array<{ campo: string; valor: string }>; confianza?: number }
-    try {
-      parsed = JSON.parse(responseContent)
-    } catch {
-      console.error('Failed to parse OpenAI response:', responseContent)
-      return jsonResponse(
-        { error: 'Failed to parse AI response. Please retry.' },
-        422,
-      )
-    }
-
-    // Validate and normalize the response
-    const extractedCampos = Array.isArray(parsed.campos)
-      ? parsed.campos
-          .filter(
-            (item): item is { campo: string; valor: string } =>
-              item != null &&
-              typeof item === 'object' &&
-              typeof item.campo === 'string' &&
-              (typeof item.valor === 'string' || item.valor == null),
-          )
-          .map((item) => ({
-            campo: item.campo,
-            valor: item.valor ?? '',
-          }))
-      : []
-
-    const confianza = typeof parsed.confianza === 'number'
-      ? Math.max(0, Math.min(1, parsed.confianza))
-      : 0
-
-    // Check if extraction returned anything useful
-    if (extractedCampos.length === 0) {
-      return jsonResponse(
-        { error: 'No data could be extracted from the PDF. Verify the PDF content is readable.' },
-        422,
-      )
-    }
-
-    return jsonResponse({
-      campos: extractedCampos,
-      confianza: Math.round(confianza * 100) / 100,
+      }),
     })
+
+    if (!threadRes.ok) {
+      const errText = await threadRes.text()
+      console.error('Thread creation failed:', errText)
+      return jsonResponse({ error: 'Failed to create AI thread' }, 502)
+    }
+
+    const threadData = await threadRes.json()
+    threadId = threadData.id
   } catch (err: unknown) {
-    const error = err as { name?: string; status?: number; message?: string }
+    console.error('Thread error:', err)
+    return jsonResponse({ error: 'AI service error' }, 502)
+  }
 
-    // Handle timeout (AbortError)
-    if (error.name === 'AbortError') {
-      return jsonResponse(
-        { error: 'Request timed out after 60 seconds. The PDF may be too large or complex.' },
-        504,
-      )
+  // --- Run the Assistant ---
+  let runId: string
+  try {
+    const runRes = await openaiRequest(`/threads/${threadId}/runs`, openaiApiKey, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assistant_id: assistantId }),
+    })
+
+    if (!runRes.ok) {
+      const errText = await runRes.text()
+      console.error('Run creation failed:', errText)
+      return jsonResponse({ error: 'Failed to start AI analysis' }, 502)
     }
 
-    // Handle invalid API key
-    if (error.status === 401) {
-      console.error('OpenAI API key invalid')
-      return jsonResponse(
-        { error: 'AI service authentication failed. Contact administrator.' },
-        502,
-      )
+    const runData = await runRes.json()
+    runId = runData.id
+  } catch (err: unknown) {
+    console.error('Run error:', err)
+    return jsonResponse({ error: 'AI service error' }, 502)
+  }
+
+  // --- Poll for completion ---
+  const startTime = Date.now()
+  let runStatus = 'queued'
+
+  while (runStatus !== 'completed' && runStatus !== 'failed' && runStatus !== 'cancelled') {
+    if (Date.now() - startTime > MAX_POLL_MS) {
+      // Cleanup
+      await openaiRequest(`/threads/${threadId}/runs/${runId}/cancel`, openaiApiKey, { method: 'POST' })
+      await openaiRequest(`/assistants/${assistantId}`, openaiApiKey, { method: 'DELETE' })
+      await openaiRequest(`/files/${openaiFileId}`, openaiApiKey, { method: 'DELETE' })
+      return jsonResponse({ error: 'Tiempo de espera agotado (55s). Intente con un PDF más pequeño.' }, 504)
     }
 
-    // Handle rate limiting
-    if (error.status === 429) {
-      return jsonResponse(
-        { error: 'AI service rate limit exceeded. Please retry in a few moments.' },
-        429,
-      )
-    }
+    await delay(POLL_INTERVAL_MS)
 
-    // Generic OpenAI error
-    console.error('OpenAI API error:', error.message ?? error)
+    const statusRes = await openaiRequest(`/threads/${threadId}/runs/${runId}`, openaiApiKey)
+    if (!statusRes.ok) break
+    const statusData = await statusRes.json()
+    runStatus = statusData.status
+  }
+
+  if (runStatus !== 'completed') {
+    await openaiRequest(`/assistants/${assistantId}`, openaiApiKey, { method: 'DELETE' })
+    await openaiRequest(`/files/${openaiFileId}`, openaiApiKey, { method: 'DELETE' })
+    return jsonResponse({ error: 'AI analysis failed. Please retry.' }, 502)
+  }
+
+  // --- Get messages (response) ---
+  let responseText = ''
+  try {
+    const msgsRes = await openaiRequest(`/threads/${threadId}/messages?order=desc&limit=1`, openaiApiKey)
+    if (msgsRes.ok) {
+      const msgsData = await msgsRes.json()
+      const lastMsg = msgsData.data?.[0]
+      if (lastMsg?.role === 'assistant' && lastMsg.content) {
+        for (const block of lastMsg.content) {
+          if (block.type === 'text') {
+            responseText += block.text.value
+          }
+        }
+      }
+    }
+  } catch (err: unknown) {
+    console.error('Messages fetch error:', err)
+  }
+
+  // --- Cleanup OpenAI resources ---
+  await openaiRequest(`/assistants/${assistantId}`, openaiApiKey, { method: 'DELETE' }).catch(() => {})
+  await openaiRequest(`/files/${openaiFileId}`, openaiApiKey, { method: 'DELETE' }).catch(() => {})
+
+  // --- Parse response ---
+  if (!responseText || responseText.trim().length === 0) {
     return jsonResponse(
-      { error: 'AI extraction failed. Please retry.' },
-      502,
+      { error: 'No se pudieron extraer datos del PDF. Verifique que el contenido sea legible.' },
+      422,
     )
   }
+
+  // Clean markdown code blocks if present
+  let cleanJson = responseText.trim()
+  if (cleanJson.startsWith('```')) {
+    cleanJson = cleanJson.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '')
+  }
+
+  let parsed: { campos?: Array<{ campo: string; valor: string }>; confianza?: number }
+  try {
+    parsed = JSON.parse(cleanJson)
+  } catch {
+    console.error('Failed to parse AI response:', responseText)
+    return jsonResponse({ error: 'Failed to parse AI response. Please retry.' }, 422)
+  }
+
+  // Validate and normalize
+  const extractedCampos = Array.isArray(parsed.campos)
+    ? parsed.campos
+        .filter(
+          (item): item is { campo: string; valor: string } =>
+            item != null &&
+            typeof item === 'object' &&
+            typeof item.campo === 'string',
+        )
+        .map((item) => ({
+          campo: item.campo,
+          valor: typeof item.valor === 'string' ? item.valor : '',
+        }))
+    : []
+
+  const confianza = typeof parsed.confianza === 'number'
+    ? Math.max(0, Math.min(1, parsed.confianza))
+    : 0
+
+  if (extractedCampos.length === 0) {
+    return jsonResponse(
+      { error: 'No se pudieron extraer datos del PDF.' },
+      422,
+    )
+  }
+
+  return jsonResponse({
+    campos: extractedCampos,
+    confianza: Math.round(confianza * 100) / 100,
+  })
 })
