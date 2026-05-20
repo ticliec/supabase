@@ -7,6 +7,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1'
 import OpenAI from 'https://esm.sh/openai@4'
+import * as pdfParse from 'https://esm.sh/pdf-parse@1.1.1'
 
 const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -115,35 +116,57 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Failed to download PDF from storage' }, 404)
   }
 
-  // Convert PDF to base64 for OpenAI
+  // Extract text from PDF
   const arrayBuffer = await fileData.arrayBuffer()
   const uint8Array = new Uint8Array(arrayBuffer)
-  const base64Content = btoa(
-    uint8Array.reduce((data, byte) => data + String.fromCharCode(byte), ''),
-  )
+
+  let pdfText: string
+  try {
+    const pdfData = await pdfParse.default(uint8Array)
+    pdfText = pdfData.text
+  } catch (parseErr: unknown) {
+    console.error('PDF parse error:', parseErr)
+    return jsonResponse(
+      { error: 'No se pudo leer el contenido del PDF. Verifique que el archivo no esté dañado o protegido.' },
+      422,
+    )
+  }
+
+  if (!pdfText || pdfText.trim().length < 10) {
+    return jsonResponse(
+      { error: 'El PDF no contiene texto legible. Puede ser un PDF escaneado (imagen). Intente con un PDF que tenga texto seleccionable.' },
+      422,
+    )
+  }
+
+  // Truncate to ~15000 chars to stay within token limits
+  const truncatedText = pdfText.length > 15000 ? pdfText.substring(0, 15000) + '\n[...texto truncado...]' : pdfText
 
   // --- Call OpenAI API ---
   const openai = new OpenAI({ apiKey: openaiApiKey })
 
-  const systemPrompt = `Eres un asistente especializado en extraer datos de certificados de calibración en formato PDF.
-Se te proporcionará un documento PDF y una lista de campos a extraer.
-Debes analizar el contenido del PDF y extraer el valor de cada campo solicitado.
+  const systemPrompt = `Eres un asistente especializado en extraer datos de certificados de calibración.
+Se te proporcionará el texto extraído de un documento PDF y una lista de campos a extraer.
+Debes analizar el contenido y extraer el valor de cada campo solicitado.
 
 REGLAS:
 - Extrae SOLO los campos solicitados.
 - Si no encuentras un campo en el documento, devuelve su valor como cadena vacía "".
+- Para fechas, usa formato YYYY-MM-DD (ejemplo: 2025-03-15).
+- Para "caducidad en meses", calcula la diferencia entre fecha de vencimiento y fecha de calibración si están disponibles.
 - Responde ÚNICAMENTE con un JSON válido con la siguiente estructura:
   { "campos": [{ "campo": "<nombre_campo>", "valor": "<valor_extraido>" }], "confianza": <0.0-1.0> }
 - "confianza" es un número entre 0.0 y 1.0 que indica qué tan seguro estás de la extracción general.
-  - 1.0 = todos los campos fueron encontrados claramente
-  - 0.5 = algunos campos fueron encontrados pero con incertidumbre
-  - 0.0 = no se pudo extraer ningún dato
 - NO incluyas explicaciones, solo el JSON.`
 
-  const userPrompt = `Extrae los siguientes campos del documento PDF adjunto:
+  const userPrompt = `Extrae los siguientes campos del texto de este certificado de calibración:
 
 Campos a extraer:
 ${camposValidos.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+
+--- TEXTO DEL DOCUMENTO ---
+${truncatedText}
+--- FIN DEL DOCUMENTO ---
 
 Responde SOLO con el JSON estructurado.`
 
@@ -156,19 +179,7 @@ Responde SOLO con el JSON estructurado.`
         model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:application/pdf;base64,${base64Content}`,
-                  detail: 'high',
-                },
-              },
-              { type: 'text', text: userPrompt },
-            ],
-          },
+          { role: 'user', content: userPrompt },
         ],
         temperature: 0.1,
         max_tokens: 2000,
