@@ -1,3 +1,4 @@
+
 // Supabase Edge Function: genera link de invitación sin enviar correo.
 // Útil para compartir por WhatsApp u otros canales.
 //
@@ -30,6 +31,14 @@ Deno.serve(async (req) => {
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     const anonKey =
       Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('ANON_KEY') ?? ''
+    // URL pública de Supabase (accesible desde internet).
+    // En self-hosted (EasyPanel/Docker), SUPABASE_URL apunta al gateway interno (kong).
+    // API_EXTERNAL_URL debe ser la URL pública del servicio Supabase.
+    const apiExternalUrl = (
+      Deno.env.get('API_EXTERNAL_URL') ??
+      Deno.env.get('SUPABASE_PUBLIC_URL') ??
+      ''
+    ).replace(/\/$/, '')
 
     if (!supabaseUrl || !serviceKey || !anonKey) {
       return new Response(
@@ -146,12 +155,31 @@ Deno.serve(async (req) => {
       )
     }
 
-    const actionLink = data?.properties?.action_link
+    let actionLink: string = data?.properties?.action_link ?? ''
     if (!actionLink) {
       return new Response(
         JSON.stringify({ error: 'No se pudo generar el enlace de invitación.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
+    }
+
+    // Reemplazar URL interna (kong / localhost) por la URL pública de Supabase.
+    // generateLink() usa SUPABASE_URL del contenedor que en self-hosted es http://kong:8000.
+    if (apiExternalUrl) {
+      try {
+        const linkUrl = new URL(actionLink)
+        const externalUrl = new URL(apiExternalUrl)
+        linkUrl.protocol = externalUrl.protocol
+        linkUrl.host = externalUrl.host
+        linkUrl.port = externalUrl.port
+        actionLink = linkUrl.toString()
+      } catch {
+        // Si falla el parseo, intentar reemplazo simple del origen
+        const internalOrigin = supabaseUrl.replace(/\/$/, '')
+        if (actionLink.startsWith(internalOrigin)) {
+          actionLink = apiExternalUrl + actionLink.slice(internalOrigin.length)
+        }
+      }
     }
 
     return new Response(JSON.stringify({ ok: true, link: actionLink }), {
