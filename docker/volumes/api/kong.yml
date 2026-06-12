@@ -74,6 +74,25 @@ services:
           - /auth/v1/
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
       - name: key-auth
         config:
           hide_credentials: false
@@ -95,6 +114,30 @@ services:
           - /rest/v1/
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+            - Prefer
+            - Range
+          credentials: true
+          max_age: 3600
+          exposed_headers:
+            - Content-Range
+            - X-Total-Count
       - name: key-auth
         config:
           hide_credentials: true
@@ -134,7 +177,7 @@ services:
   ## Secure Realtime routes
   - name: realtime-v1-ws
     _comment: 'Realtime: /realtime/v1/* -> ws://realtime:4000/socket/*'
-    url: http://realtime-dev.supabase-realtime:4000/socket
+    url: http://realtime:4000/socket
     protocol: ws
     routes:
       - name: realtime-v1-ws
@@ -143,6 +186,25 @@ services:
           - /realtime/v1/
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
       - name: key-auth
         config:
           hide_credentials: false
@@ -153,8 +215,8 @@ services:
             - admin
             - anon
   - name: realtime-v1-rest
-    _comment: 'Realtime: /realtime/v1/* -> ws://realtime:4000/socket/*'
-    url: http://realtime-dev.supabase-realtime:4000/api
+    _comment: 'Realtime: /realtime/v1/api/* -> http://realtime:4000/api/*'
+    url: http://realtime:4000/api
     protocol: http
     routes:
       - name: realtime-v1-rest
@@ -163,6 +225,25 @@ services:
           - /realtime/v1/api
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
       - name: key-auth
         config:
           hide_credentials: false
@@ -183,6 +264,29 @@ services:
           - /storage/v1/
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+            - Range
+            - x-upsert
+          credentials: true
+          max_age: 3600
+          exposed_headers:
+            - Content-Range
 
   ## Edge Functions routes
   - name: functions-v1
@@ -195,6 +299,25 @@ services:
           - /functions/v1/
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
 
   ## Analytics routes
   ## Not used - Studio and Vector talk directly to analytics via Docker networking.
@@ -296,4 +419,3 @@ services:
       - name: basic-auth
         config:
           hide_credentials: true
-
