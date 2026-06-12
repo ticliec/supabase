@@ -44,6 +44,26 @@ services:
           - /auth/v1/verify
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
+
   - name: auth-v1-open-callback
     url: http://auth:9999/callback
     routes:
@@ -53,6 +73,26 @@ services:
           - /auth/v1/callback
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
+
   - name: auth-v1-open-authorize
     url: http://auth:9999/authorize
     routes:
@@ -62,6 +102,25 @@ services:
           - /auth/v1/authorize
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
 
   ## Secure Auth routes
   - name: auth-v1
@@ -159,6 +218,22 @@ services:
           - /graphql/v1
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
       - name: key-auth
         config:
           hide_credentials: true
@@ -177,7 +252,7 @@ services:
   ## Secure Realtime routes
   - name: realtime-v1-ws
     _comment: 'Realtime: /realtime/v1/* -> ws://realtime:4000/socket/*'
-    url: http://realtime:4000/socket
+    url: http://realtime-dev.supabase-realtime:4000/socket
     protocol: ws
     routes:
       - name: realtime-v1-ws
@@ -214,9 +289,10 @@ services:
           allow:
             - admin
             - anon
+
   - name: realtime-v1-rest
     _comment: 'Realtime: /realtime/v1/api/* -> http://realtime:4000/api/*'
-    url: http://realtime:4000/api
+    url: http://realtime-dev.supabase-realtime:4000/api
     protocol: http
     routes:
       - name: realtime-v1-rest
@@ -253,6 +329,7 @@ services:
           allow:
             - admin
             - anon
+
   ## Storage routes: the storage server manages its own auth
   - name: storage-v1
     _comment: 'Storage: /storage/v1/* -> http://storage:5000/*'
@@ -319,31 +396,6 @@ services:
           credentials: true
           max_age: 3600
 
-  ## Analytics routes
-  ## Not used - Studio and Vector talk directly to analytics via Docker networking.
-  ## If external access is needed, add routes with key-auth matching Logflare's x-api-key auth.
-  # - name: analytics-v1-api
-  #   _comment: 'Analytics: /analytics/v1/api/endpoints/* -> http://logflare:4000/api/endpoints/*'
-  #   url: http://analytics:4000/api/endpoints
-  #   routes:
-  #     - name: analytics-v1-api
-  #       strip_path: true
-  #       paths:
-  #         - /analytics/v1/api/endpoints/
-  # - name: analytics-v1
-  #   _comment: 'Analytics: /analytics/v1/* -> http://logflare:4000/*'
-  #   url: http://analytics:4000/
-  #   routes:
-  #     - name: dashboard-v1-all
-  #       strip_path: true
-  #       paths:
-  #         - /analytics/v1
-  #   plugins:
-  #     - name: cors
-  #     - name: basic-auth
-  #       config:
-  #         hide_credentials: true
-
   ## Secure Database routes
   - name: meta
     _comment: 'pg-meta: /pg/* -> http://pg-meta:8080/*'
@@ -363,48 +415,6 @@ services:
           allow:
             - admin
 
-  ## Block access to /api/mcp
-  - name: mcp-blocker
-    _comment: 'Block direct access to /api/mcp'
-    url: http://studio:3000/api/mcp
-    routes:
-      - name: mcp-blocker-route
-        strip_path: true
-        paths:
-          - /api/mcp
-    plugins:
-      - name: request-termination
-        config:
-          status_code: 403
-          message: "Access is forbidden."
-
-  ## MCP endpoint - local access
-  - name: mcp
-    _comment: 'MCP: /mcp -> http://studio:3000/api/mcp (local access)'
-    url: http://studio:3000/api/mcp
-    routes:
-      - name: mcp
-        strip_path: true
-        paths:
-          - /mcp
-    plugins:
-      # Block access to /mcp by default
-      #- name: request-termination
-      #  config:
-      #    status_code: 403
-      #    message: "Access is forbidden."
-      # Enable local access (danger zone!)
-      - name: cors
-      - name: ip-restriction
-        config:
-          allow:
-            - 127.0.0.1
-            - ::1
-            # Add your Docker bridge gateway IP below (run: docker inspect supabase-kong --format '{{range .NetworkSettings.Networks}}{{println .Gateway}}{{end}}')
-            - 172.18.0.1
-          # Do not remove deny!
-          deny: []
-
   ## Protected Dashboard - catch all remaining routes
   - name: dashboard
     _comment: 'Studio: /* -> http://studio:3000/*'
@@ -416,6 +426,25 @@ services:
           - /
     plugins:
       - name: cors
+        config:
+          origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+          credentials: true
+          max_age: 3600
       - name: basic-auth
         config:
           hide_credentials: true
