@@ -11,6 +11,11 @@ services:
   studio:
     image: supabase/studio:2026.02.16-sha-26c615c
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'     # Máximo la mitad de 1 núcleo CPU
+          memory: 512M     # Máximo 512MB de RAM
     healthcheck:
       test:
         [
