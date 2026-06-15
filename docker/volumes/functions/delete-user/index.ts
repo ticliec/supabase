@@ -1,6 +1,7 @@
 // Supabase Edge Function: eliminar cuenta de usuario (auth.admin.deleteUser)
 // Solo accesible para administradores de sistema (es_admin_sistema = true).
 //
+// Acepta { userId } O { email } para localizar la cuenta auth.
 // Elimina el usuario de auth.users y limpia las referencias en user_profiles y pdr_personal1.
 // NO elimina el registro de pdr_personal1 (nómina), solo desvincula el uid.
 //
@@ -78,11 +79,84 @@ Deno.serve(async (req) => {
       })
     }
 
-    const body = (await req.json()) as { userId?: string }
-    const targetUserId = body.userId?.trim()
-    if (!targetUserId) {
-      return new Response(JSON.stringify({ error: 'userId requerido' }), {
+    const body = (await req.json()) as { userId?: string; email?: string }
+    const inputUserId = body.userId?.trim()
+    const inputEmail = body.email?.trim()
+
+    if (!inputUserId && !inputEmail) {
+      return new Response(JSON.stringify({ error: 'Se requiere userId o email' }), {
         status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Resolver el userId del target
+    let targetUserId: string | null = inputUserId || null
+    let targetEmail: string | null = null
+
+    if (targetUserId) {
+      // Buscar por userId directamente
+      const { data: targetUser, error: targetErr } = await adminClient.auth.admin.getUserById(targetUserId)
+      if (targetErr || !targetUser?.user) {
+        return new Response(JSON.stringify({ error: 'Usuario no encontrado en auth' }), {
+          status: 404,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+      targetEmail = targetUser.user.email ?? null
+    } else if (inputEmail) {
+      // Buscar usuario por email en auth.users usando listUsers con filtro
+      // Supabase admin API no tiene getUserByEmail directamente, usamos listUsers
+      const { data: listData, error: listErr } = await adminClient.auth.admin.listUsers({
+        page: 1,
+        perPage: 50,
+      })
+
+      if (listErr) {
+        return new Response(JSON.stringify({ error: `Error al buscar usuarios: ${listErr.message}` }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+
+      const found = listData.users.find(
+        (u) => u.email?.toLowerCase() === inputEmail.toLowerCase(),
+      )
+
+      if (!found) {
+        // Intentar con paginación si hay muchos usuarios
+        let page = 2
+        let foundUser = found
+        while (!foundUser && listData.users.length === 50) {
+          const { data: nextPage, error: nextErr } = await adminClient.auth.admin.listUsers({
+            page,
+            perPage: 50,
+          })
+          if (nextErr || !nextPage?.users?.length) break
+          foundUser = nextPage.users.find(
+            (u) => u.email?.toLowerCase() === inputEmail.toLowerCase(),
+          )
+          if (nextPage.users.length < 50) break
+          page++
+        }
+
+        if (!foundUser) {
+          return new Response(
+            JSON.stringify({ error: `No existe cuenta auth con el correo: ${inputEmail}` }),
+            { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+          )
+        }
+        targetUserId = foundUser.id
+        targetEmail = foundUser.email ?? inputEmail
+      } else {
+        targetUserId = found.id
+        targetEmail = found.email ?? inputEmail
+      }
+    }
+
+    if (!targetUserId) {
+      return new Response(JSON.stringify({ error: 'No se pudo resolver el usuario' }), {
+        status: 404,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
@@ -95,22 +169,13 @@ Deno.serve(async (req) => {
       })
     }
 
-    // Verificar que el usuario objetivo existe
-    const { data: targetUser, error: targetErr } = await adminClient.auth.admin.getUserById(targetUserId)
-    if (targetErr || !targetUser?.user) {
-      return new Response(JSON.stringify({ error: 'Usuario no encontrado en auth' }), {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
-    }
-
     // 1. Desvincular uid en pdr_personal1
     await adminClient
       .from('pdr_personal1')
       .update({ uid: null })
       .eq('uid', targetUserId)
 
-    // 2. Eliminar user_profiles (o marcar inactivo)
+    // 2. Eliminar user_profiles
     await adminClient
       .from('user_profiles')
       .delete()
@@ -132,7 +197,7 @@ Deno.serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, email: targetUser.user.email }),
+      JSON.stringify({ ok: true, email: targetEmail }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     )
   } catch (e) {
