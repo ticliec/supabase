@@ -1,4 +1,3 @@
-
 // Supabase Edge Function: genera link de invitación sin enviar correo.
 // Útil para compartir por WhatsApp u otros canales.
 //
@@ -95,7 +94,8 @@ Deno.serve(async (req) => {
       puedeInvitar =
         cl === 'TALENTO_HUMANO' ||
         cl === 'DIR_OPERATIVA' ||
-        cl === 'ADMINISTRACION'
+        cl === 'ADMINISTRACION' ||
+        prof.area_id === 35
     }
 
     if (!puedeInvitar) {
@@ -105,7 +105,7 @@ Deno.serve(async (req) => {
       })
     }
 
-    const body = (await req.json()) as { email?: string; redirectTo?: string }
+    const body = (await req.json()) as { email?: string; redirectTo?: string; type?: string }
     const email = body.email?.trim()
     if (!email) {
       return new Response(JSON.stringify({ error: 'email requerido' }), {
@@ -113,6 +113,9 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
+
+    // Tipo de link: 'invite' (default) o 'recovery' (reset password)
+    const linkType = body.type === 'recovery' ? 'recovery' : 'invite'
 
     const redirectTo = body.redirectTo?.trim() || undefined
     if (redirectTo) {
@@ -132,19 +135,27 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Generar link de invitación sin enviar correo
+    // Generar link sin enviar correo (invite o recovery)
     const { data, error: linkErr } = await adminClient.auth.admin.generateLink({
-      type: 'invite',
+      type: linkType,
       email,
       options: { redirectTo },
     })
 
     if (linkErr) {
       const msg = linkErr.message.toLowerCase()
-      if (msg.includes('already') && msg.includes('registered')) {
+      if (msg.includes('already') && msg.includes('registered') && linkType === 'invite') {
         return new Response(
           JSON.stringify({
             error: 'Ese correo ya tiene cuenta. Debe iniciar sesión o recuperar contraseña.',
+          }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+      if (msg.includes('user not found') || msg.includes('no user')) {
+        return new Response(
+          JSON.stringify({
+            error: 'No existe cuenta con ese correo. Primero debe ser invitado.',
           }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         )
@@ -158,7 +169,7 @@ Deno.serve(async (req) => {
     let actionLink: string = data?.properties?.action_link ?? ''
     if (!actionLink) {
       return new Response(
-        JSON.stringify({ error: 'No se pudo generar el enlace de invitación.' }),
+        JSON.stringify({ error: `No se pudo generar el enlace de ${linkType === 'recovery' ? 'recuperación' : 'invitación'}.` }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
     }
