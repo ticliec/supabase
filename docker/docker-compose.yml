@@ -123,6 +123,13 @@ services:
       GOTRUE_MAILER_URLPATHS_CONFIRMATION: ${MAILER_URLPATHS_CONFIRMATION}
       GOTRUE_MAILER_URLPATHS_RECOVERY: ${MAILER_URLPATHS_RECOVERY}
       GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: ${MAILER_URLPATHS_EMAIL_CHANGE}
+
+      # Expiración de tokens OTP/invitación (en segundos). 86400 = 24 h, 604800 = 7 días.
+      GOTRUE_MAILER_OTP_EXP: ${MAILER_OTP_EXP:-604800}
+
+      # Habilitar flujo PKCE (más seguro, evita consumo de token por bots de preview)
+      GOTRUE_EXTERNAL_EMAIL_OTP_ENABLED: true
+
       GOTRUE_MAILER_TEMPLATES_INVITE: http://email-templates:80/invite.html
       GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://email-templates:80/confirmation.html
       GOTRUE_MAILER_TEMPLATES_RECOVERY: http://email-templates:80/recovery.html
