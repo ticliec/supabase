@@ -63,6 +63,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
           credentials: true
           max_age: 3600
 
@@ -94,6 +96,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
           credentials: true
           max_age: 3600
 
@@ -125,6 +129,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
           credentials: true
           max_age: 3600
 
@@ -158,6 +164,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
           credentials: true
           max_age: 3600
       - name: key-auth
@@ -200,6 +208,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
             - Prefer
             - Range
           credentials: true
@@ -244,6 +254,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
           credentials: true
           max_age: 3600
       - name: key-auth
@@ -292,6 +304,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
           credentials: true
           max_age: 3600
       - name: key-auth
@@ -334,6 +348,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
           credentials: true
           max_age: 3600
       - name: key-auth
@@ -376,6 +392,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
             - Range
             - x-upsert
           credentials: true
@@ -413,6 +431,8 @@ services:
             - apikey
             - x-client-info
             - x-supabase-api-version
+            - accept-profile
+            - content-profile
           credentials: true
           max_age: 3600
 
@@ -448,3 +468,27 @@ services:
       - name: cors
         config:
           origins:
+            - https://orbita.liec.com.mx
+            - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - x-client-info
+            - x-supabase-api-version
+            - accept-profile
+            - content-profile
+          credentials: true
+          max_age: 3600
+      - name: basic-auth
+        config:
+          hide_credentials: true
