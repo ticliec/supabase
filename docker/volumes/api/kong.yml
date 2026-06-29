@@ -48,6 +48,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -61,6 +62,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
           credentials: true
           max_age: 3600
 
@@ -77,6 +79,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -90,6 +93,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
           credentials: true
           max_age: 3600
 
@@ -106,6 +110,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -119,6 +124,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
           credentials: true
           max_age: 3600
 
@@ -137,6 +143,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -150,6 +157,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
           credentials: true
           max_age: 3600
       - name: key-auth
@@ -177,6 +185,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -190,6 +199,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
             - Prefer
             - Range
           credentials: true
@@ -222,6 +232,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -232,6 +243,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
           credentials: true
           max_age: 3600
       - name: key-auth
@@ -265,6 +277,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -278,6 +291,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
           credentials: true
           max_age: 3600
       - name: key-auth
@@ -305,6 +319,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -318,6 +333,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
           credentials: true
           max_age: 3600
       - name: key-auth
@@ -345,6 +361,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -358,6 +375,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
             - Range
             - x-upsert
           credentials: true
@@ -380,6 +398,7 @@ services:
           origins:
             - https://orbita.liec.com.mx
             - https://www.orbita.liec.com.mx
+            - https://liec-web-erp-liec.wxeifq.easypanel.host
           methods:
             - GET
             - POST
@@ -393,6 +412,7 @@ services:
             - Content-Type
             - apikey
             - x-client-info
+            - x-supabase-api-version
           credentials: true
           max_age: 3600
 
@@ -428,23 +448,3 @@ services:
       - name: cors
         config:
           origins:
-            - https://orbita.liec.com.mx
-            - https://www.orbita.liec.com.mx
-          methods:
-            - GET
-            - POST
-            - PUT
-            - PATCH
-            - DELETE
-            - OPTIONS
-          headers:
-            - Accept
-            - Authorization
-            - Content-Type
-            - apikey
-            - x-client-info
-          credentials: true
-          max_age: 3600
-      - name: basic-auth
-        config:
-          hide_credentials: true
