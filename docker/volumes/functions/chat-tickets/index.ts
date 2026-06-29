@@ -1,12 +1,16 @@
-// Supabase Edge Function: chat-tickets n01
+// Supabase Edge Function: chat-tickets
 // Proxy seguro hacia OpenAI GPT-4o-mini para el chatbot de tickets.
 //
-// Self-hosted: esta función vive en volumes/functions/chat-tickets/
-// El router main/index.ts la despacha automáticamente por nombre.
+// Clasificaciones y técnicos se cargan DINÁMICAMENTE desde la DB en cada request.
+// Esto elimina la desincronización entre el prompt de la IA y el catálogo real.
 //
-// Variables de entorno requeridas (configuradas en docker-compose.yml → functions):
+// Supabase Cloud: supabase functions deploy chat-tickets
+// Self-hosted: copiar a volumes/functions/chat-tickets/ y reiniciar.
+//
+// Secrets requeridos:
 //   - OPENAI_API_KEY
-//   - SUPABASE_URL, SUPABASE_ANON_KEY (ya configuradas)
+//   - SUPABASE_URL, SUPABASE_ANON_KEY (automáticos en Supabase Cloud)
+//   - SUPABASE_SERVICE_ROLE_KEY (para leer clasificaciones/técnicos sin RLS)
 //   - ERP_FRONTEND_ORIGIN (opcional, default '*')
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1'
@@ -31,8 +35,6 @@ const RATE_LIMIT_WINDOW_MS = 60_000 // 1 minute
 function isRateLimited(userId: string): boolean {
   const now = Date.now()
   const timestamps = rateLimitMap.get(userId) ?? []
-
-  // Remove timestamps outside the window
   const recent = timestamps.filter((ts) => now - ts < RATE_LIMIT_WINDOW_MS)
 
   if (recent.length >= RATE_LIMIT_MAX) {
@@ -45,22 +47,131 @@ function isRateLimited(userId: string): boolean {
   return false
 }
 
-// ── System Prompt ────────────────────────────────────────────────────────────
+// ── In-memory cache for classifications + technicians ────────────────────────
+// Cached per-instance to avoid querying DB on every single message.
+// TTL: 5 minutes. The Edge Function instance restarts on deploy anyway.
 
-/** Builds the system prompt dynamically with the current classifications from DB. */
-function buildSystemPrompt(clasificaciones: Record<string, string[]>, contextos: Record<string, Record<string, string>>): string {
-  // Build classification lists with context/glossary when available
-  function formatClasificaciones(area: string): string {
-    const claves = clasificaciones[area] ?? []
-    const areaContextos = contextos[area] ?? {}
-    return claves.map((clave) => {
-      const ctx = areaContextos[clave]
-      return ctx ? `${clave} (${ctx})` : clave
-    }).join('; ')
+type ClasificacionCache = {
+  area: string
+  clave: string
+  nombre: string
+  contexto_chatbot: string | null
+}
+
+type TecnicoCache = {
+  nombre_completo: string
+  area: string
+  especializaciones: string[]
+}
+
+type CatalogCache = {
+  clasificaciones: ClasificacionCache[]
+  tecnicos: TecnicoCache[]
+  timestamp: number
+}
+
+let catalogCache: CatalogCache | null = null
+const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
+async function loadCatalog(serviceClient: ReturnType<typeof createClient>): Promise<CatalogCache> {
+  const now = Date.now()
+
+  // Return cached if still fresh
+  if (catalogCache && now - catalogCache.timestamp < CACHE_TTL_MS) {
+    return catalogCache
   }
 
-  const ticList = formatClasificaciones('TIC')
-  const infraList = formatClasificaciones('INFRAESTRUCTURA')
+  // Fetch classifications and technicians in parallel
+  const [clasifResult, tecnicosResult, especResult] = await Promise.all([
+    serviceClient
+      .from('ticket_clasificaciones')
+      .select('area, clave, nombre, contexto_chatbot')
+      .eq('activo', true)
+      .order('area')
+      .order('orden'),
+    serviceClient
+      .from('tecnicos_soporte')
+      .select('id, nombre_completo, area')
+      .eq('activo', true),
+    serviceClient
+      .from('tecnico_especializaciones')
+      .select('tecnico_id, area, clasificacion'),
+  ])
+
+  const clasificaciones: ClasificacionCache[] = (clasifResult.data ?? []) as ClasificacionCache[]
+
+  // Build technicians with their specializations
+  const tecnicosRaw = (tecnicosResult.data ?? []) as { id: string; nombre_completo: string; area: string }[]
+  const especRaw = (especResult.data ?? []) as { tecnico_id: string; area: string; clasificacion: string }[]
+
+  // Map specializations by tecnico_id
+  const especMap = new Map<string, string[]>()
+  for (const e of especRaw) {
+    const existing = especMap.get(e.tecnico_id) ?? []
+    existing.push(e.clasificacion)
+    especMap.set(e.tecnico_id, existing)
+  }
+
+  const tecnicos: TecnicoCache[] = tecnicosRaw.map((t) => ({
+    nombre_completo: t.nombre_completo,
+    area: t.area,
+    especializaciones: especMap.get(t.id) ?? [],
+  }))
+
+  catalogCache = { clasificaciones, tecnicos, timestamp: now }
+  return catalogCache
+}
+
+// ── Dynamic System Prompt Builder ────────────────────────────────────────────
+
+function buildSystemPrompt(catalog: CatalogCache, userName: string): string {
+  // Group classifications by area
+  const byArea = new Map<string, ClasificacionCache[]>()
+  for (const c of catalog.clasificaciones) {
+    const existing = byArea.get(c.area) ?? []
+    existing.push(c)
+    byArea.set(c.area, existing)
+  }
+
+  // Build classifications section
+  let clasificacionesSection = ''
+  for (const [area, items] of byArea) {
+    const claves = items.map((i) => i.clave).join(', ')
+    clasificacionesSection += `   - **${area}**: ${claves}\n`
+
+    // Add context for each classification that has it
+    const conContexto = items.filter((i) => i.contexto_chatbot)
+    if (conContexto.length > 0) {
+      clasificacionesSection += `     Glosario:\n`
+      for (const item of conContexto) {
+        clasificacionesSection += `     • ${item.clave} (${item.nombre}): ${item.contexto_chatbot}\n`
+      }
+    }
+  }
+
+  // Build technicians section (so the AI knows who handles what)
+  let tecnicosSection = ''
+  const tecnicosByArea = new Map<string, TecnicoCache[]>()
+  for (const t of catalog.tecnicos) {
+    const existing = tecnicosByArea.get(t.area) ?? []
+    existing.push(t)
+    tecnicosByArea.set(t.area, existing)
+  }
+
+  for (const [area, techs] of tecnicosByArea) {
+    tecnicosSection += `   - **${area}**:\n`
+    for (const t of techs) {
+      const esps = t.especializaciones.length > 0
+        ? ` (especializado en: ${t.especializaciones.join(', ')})`
+        : ' (sin especialización definida — atiende cualquier clasificación)'
+      tecnicosSection += `     • ${t.nombre_completo}${esps}\n`
+    }
+  }
+
+  // Build valid classifications list for the JSON format instruction
+  const validList = [...byArea.entries()]
+    .map(([area, items]) => `${area}: ${items.map((i) => i.clave).join(', ')}`)
+    .join(' | ')
 
   return `Eres un asistente de soporte técnico y de infraestructura amigable y profesional para la empresa LIEC. Responde siempre en español.
 
@@ -73,50 +184,54 @@ Tu objetivo es ayudar a los empleados a crear tickets de soporte. Sigue este flu
    - **Clasificación** (clasificacion): una de las opciones válidas para el área detectada
    - **Prioridad** (prioridad): BAJA, MEDIA o ALTA según la urgencia
 
-3. **Áreas y clasificaciones válidas (SOLO puedes usar estas, NO inventes otras)**:
-   - **TIC**: ${ticList}
-   - **INFRAESTRUCTURA**: ${infraList}
-   Si el problema no encaja claramente en ninguna clasificación específica, usa "OTRO" para el área correspondiente.
+3. **Áreas y clasificaciones válidas (CATÁLOGO OFICIAL — usa SOLO estas)**:
+${clasificacionesSection}
+4. **Técnicos disponibles y sus especializaciones**:
+${tecnicosSection}
+   NOTA: La asignación al técnico es automática — NO le digas al usuario a quién se asignará. Solo usa esta información para entender el contexto y validar que la clasificación tiene sentido.
 
-4. **Criterios de prioridad**:
+5. **Criterios de prioridad**:
    - **ALTA**: Afecta a múltiples usuarios, detiene operaciones críticas, riesgo de seguridad, fuga de agua/gas, falla eléctrica peligrosa
    - **MEDIA**: Afecta el trabajo de un usuario o equipo, degradación de servicio, problema recurrente
    - **BAJA**: Solicitud de mejora, problema menor que tiene solución temporal, mantenimiento preventivo
 
-5. **Presentar resumen**: Muestra al usuario un resumen estructurado con los datos del ticket y explica brevemente por qué elegiste esa clasificación y prioridad. Pregunta si los datos son correctos y pide confirmación explícita.
+6. **Presentar resumen**: Muestra al usuario un resumen estructurado con los datos del ticket y explica brevemente por qué elegiste esa clasificación y prioridad. Pregunta si los datos son correctos y pide confirmación explícita.
 
-6. **Confirmación**: Cuando el usuario confirme explícitamente (por ejemplo: "sí", "si", "confirmo", "correcto", "de acuerdo", "adelante", "ok", "dale", "va"), DEBES incluir OBLIGATORIAMENTE el bloque JSON de ticket_data en tu respuesta. Sin este bloque, el sistema NO puede crear el ticket.
+7. **Confirmación**: SOLO cuando el usuario confirme explícitamente (por ejemplo: "sí", "confirmo", "correcto", "de acuerdo", "adelante"), genera el bloque JSON con ticket_data y confirmado: true.
 
-7. **Formato de salida con confirmación — OBLIGATORIO**: Cuando el usuario confirme, tu respuesta DEBE contener el siguiente bloque JSON. Es CRÍTICO que lo incluyas, de lo contrario el ticket NO se creará. Primero escribe un mensaje breve de confirmación y luego SIEMPRE incluye el bloque:
+8. **Formato de salida con confirmación**: Cuando el usuario confirme, incluye en tu respuesta un bloque JSON con exactamente esta estructura:
 \`\`\`json
 {
   "ticket_data": {
-    "descripcion": "Descripción detallada del problema reportado por el usuario (mínimo 10 caracteres)",
+    "descripcion": "Descripción detallada del problema (mínimo 10 caracteres)",
     "area": "TIC o INFRAESTRUCTURA",
-    "clasificacion": "Clasificación exacta de la lista válida para el área",
+    "clasificacion": "Clasificación válida del catálogo oficial (${validList})",
     "prioridad": "BAJA, MEDIA o ALTA",
     "confirmado": true
   }
 }
 \`\`\`
-⚠️ IMPORTANTE: Si el usuario dice "sí", "si", "confirmo", "correcto", "ok", "dale", "adelante" o cualquier afirmación después de que le mostraste el resumen, SIEMPRE debes incluir el bloque JSON anterior. Si no lo incluyes, el ticket NO se crea y el usuario tendrá una mala experiencia.
 
-8. **Casos especiales**:
+9. **Casos especiales**:
    - Si la descripción es ambigua o muy corta, haz preguntas de aclaración antes de clasificar.
    - Si el usuario habla de temas no relacionados con soporte técnico o infraestructura, redirige amablemente la conversación.
    - Si el usuario quiere corregir algún dato (área, clasificación o prioridad), acepta la corrección y presenta un nuevo resumen.
    - Si el usuario no confirma o dice que algo está mal, pregunta qué desea cambiar.
 
-9. **Imágenes**: Recuerda al usuario que puede adjuntar imágenes o fotos para ilustrar mejor el problema. Esto ayuda a los técnicos a entender la situación más rápidamente.
+10. **Imágenes**: Recuerda al usuario que puede adjuntar imágenes o fotos para ilustrar mejor el problema. Esto ayuda a los técnicos a entender la situación más rápidamente.
 
-10. **Reglas importantes**:
+11. **Reglas anti-alucinación (CRÍTICAS)**:
     - NUNCA generes el bloque JSON de ticket_data sin confirmación explícita del usuario.
-    - SIEMPRE genera el bloque JSON de ticket_data cuando el usuario confirme. Sin excepción.
-    - NUNCA uses clasificaciones que no estén en la lista válida para el área.
-    - Sé conciso pero amable en tus respuestas.
-    - Si no estás seguro del área o clasificación, pregunta al usuario.
+    - NUNCA uses clasificaciones que no estén en el catálogo oficial listado arriba.
+    - NUNCA inventes o asumas detalles que el usuario no haya mencionado en la descripción.
+    - La "descripcion" del ticket DEBE ser un resumen fiel de lo que el usuario dijo, sin agregar información que no proporcionó.
+    - Si no estás seguro del área o clasificación, PREGUNTA al usuario en vez de adivinar.
+    - NO des soluciones técnicas ni diagnósticos. Tu rol es SOLO recopilar información y crear el ticket.
+    - NO menciones nombres de técnicos ni a quién se asignará el ticket.
     - Después de crear un ticket, ofrece ayuda para crear otro si lo necesita.
-    - Si ya mostraste un resumen y el usuario responde afirmativamente, INCLUYE EL JSON. No respondas solo con texto.`
+    - Sé conciso pero amable en tus respuestas.
+
+El usuario se llama ${userName}.`
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -152,26 +267,32 @@ function jsonResponse(
   })
 }
 
-/** Extract ticket_data from the AI response text if present. */
-function extractTicketData(text: string, clasificaciones: Record<string, string[]>): TicketDataResponse | undefined {
+/** Extract and validate ticket_data from the AI response text. */
+function extractTicketData(
+  text: string,
+  validClasificaciones: Map<string, string[]>,
+): TicketDataResponse | undefined {
   // Try ```json block first
   const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)```/)
   if (jsonBlockMatch) {
-    const parsed = tryParseTicketData(jsonBlockMatch[1].trim(), clasificaciones)
+    const parsed = tryParseTicketData(jsonBlockMatch[1].trim(), validClasificaciones)
     if (parsed) return parsed
   }
 
   // Try inline JSON
   const inlineMatch = text.match(/\{[\s\S]*\}/)
   if (inlineMatch) {
-    const parsed = tryParseTicketData(inlineMatch[0], clasificaciones)
+    const parsed = tryParseTicketData(inlineMatch[0], validClasificaciones)
     if (parsed) return parsed
   }
 
   return undefined
 }
 
-function tryParseTicketData(jsonStr: string, clasificaciones: Record<string, string[]>): TicketDataResponse | undefined {
+function tryParseTicketData(
+  jsonStr: string,
+  validClasificaciones: Map<string, string[]>,
+): TicketDataResponse | undefined {
   try {
     const data = JSON.parse(jsonStr)
     // Handle both { ticket_data: {...} } and direct {...} formats
@@ -184,18 +305,10 @@ function tryParseTicketData(jsonStr: string, clasificaciones: Record<string, str
       typeof td.descripcion === 'string' &&
       td.descripcion.length >= 10 &&
       validAreas.includes(td.area) &&
+      validClasificaciones.get(td.area)?.includes(td.clasificacion) &&
       validPrioridades.includes(td.prioridad) &&
       typeof td.confirmado === 'boolean'
     ) {
-      // Validate classification against dynamic list
-      if (!clasificaciones[td.area]?.includes(td.clasificacion)) {
-        console.warn(
-          `[chat-tickets] Classification "${td.clasificacion}" not found in valid list for area "${td.area}". ` +
-          `Valid: [${(clasificaciones[td.area] ?? []).join(', ')}]`
-        )
-        return undefined
-      }
-
       return {
         descripcion: td.descripcion,
         area: td.area,
@@ -253,12 +366,14 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
     const anonKey =
       Deno.env.get('SUPABASE_ANON_KEY') ?? Deno.env.get('ANON_KEY') ?? ''
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 
     if (!supabaseUrl || !anonKey) {
       console.error('[chat-tickets] Missing SUPABASE_URL or ANON_KEY')
       return jsonResponse({ error: 'Error interno del servidor.' }, 500)
     }
 
+    // Client with user JWT for auth validation
     const supabaseUser = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: authHeader } },
       auth: { persistSession: false, autoRefreshToken: false },
@@ -297,7 +412,24 @@ Deno.serve(async (req) => {
       )
     }
 
-    // ── 4. Get OpenAI API key ──────────────────────────────────────────────
+    // ── 4. Load catalog (classifications + technicians) from DB ─────────────
+
+    // Service role client to bypass RLS (read-only catalog data)
+    const supabaseService = createClient(supabaseUrl, serviceRoleKey || anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
+
+    const catalog = await loadCatalog(supabaseService)
+
+    // Build valid classifications map for validation
+    const validClasificaciones = new Map<string, string[]>()
+    for (const c of catalog.clasificaciones) {
+      const existing = validClasificaciones.get(c.area) ?? []
+      existing.push(c.clave)
+      validClasificaciones.set(c.area, existing)
+    }
+
+    // ── 5. Get OpenAI API key ──────────────────────────────────────────────
 
     const openaiApiKey = Deno.env.get('OPENAI_API_KEY')
     if (!openaiApiKey) {
@@ -305,64 +437,17 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: 'Error interno del servidor.' }, 500)
     }
 
-    // ── 4b. Load dynamic classifications from DB ───────────────────────────
-
-    const serviceRoleKey = Deno.env.get('SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey || anonKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    })
-
-    // Fallback classifications in case DB query fails
-    const fallbackClasificaciones: Record<string, string[]> = {
-      TIC: ['SOFTWARE', 'HARDWARE', 'RED', 'CORREO', 'ERP', 'OTRO'],
-      INFRAESTRUCTURA: ['AGUA', 'DRENAJE', 'ELECTRICIDAD', 'MOBILIARIO', 'LIMPIEZA', 'OTRO'],
-    }
-
-    let clasificaciones = fallbackClasificaciones
-    let contextos: Record<string, Record<string, string>> = {}
-    let usedDynamicClassifications = false
-
-    try {
-      const { data: clasifRows, error: clasifErr } = await supabaseAdmin
-        .from('ticket_clasificaciones')
-        .select('area, clave, contexto_chatbot')
-        .eq('activo', true)
-        .order('orden', { ascending: true })
-
-      if (clasifErr) {
-        console.warn(`[chat-tickets] DB classification query error: ${clasifErr.message}. Using fallback.`)
-      } else if (clasifRows && clasifRows.length > 0) {
-        const dynamicClasif: Record<string, string[]> = {}
-        const dynamicContextos: Record<string, Record<string, string>> = {}
-        for (const row of clasifRows) {
-          if (!dynamicClasif[row.area]) dynamicClasif[row.area] = []
-          dynamicClasif[row.area].push(row.clave)
-          // Build contextos map
-          if (row.contexto_chatbot) {
-            if (!dynamicContextos[row.area]) dynamicContextos[row.area] = {}
-            dynamicContextos[row.area][row.clave] = row.contexto_chatbot
-          }
-        }
-        clasificaciones = dynamicClasif
-        contextos = dynamicContextos
-        usedDynamicClassifications = true
-        console.log(`[chat-tickets] Loaded ${clasifRows.length} dynamic classifications (TIC: ${dynamicClasif['TIC']?.length ?? 0}, INFRA: ${dynamicClasif['INFRAESTRUCTURA']?.length ?? 0})`)
-      } else {
-        console.warn('[chat-tickets] No active classifications found in DB. Using fallback.')
-      }
-    } catch (err) {
-      console.warn('[chat-tickets] Failed to load classifications from DB, using fallback:', err)
-    }
-
-    // ── 5. Prepare messages for OpenAI ─────────────────────────────────────
+    // ── 6. Prepare messages for OpenAI ─────────────────────────────────────
 
     // Truncate to last 20 messages
     const recentMessages = messages.slice(-20)
 
+    const systemPrompt = buildSystemPrompt(catalog, user_name)
+
     const openaiMessages = [
       {
         role: 'system' as const,
-        content: `${buildSystemPrompt(clasificaciones, contextos)}\n\nEl usuario se llama ${user_name}.`,
+        content: systemPrompt,
       },
       ...recentMessages.map((m) => ({
         role: m.role as 'user' | 'assistant',
@@ -370,7 +455,7 @@ Deno.serve(async (req) => {
       })),
     ]
 
-    // ── 6. Call OpenAI API with 30s timeout ────────────────────────────────
+    // ── 7. Call OpenAI API with 30s timeout ────────────────────────────────
 
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 30_000)
@@ -389,7 +474,7 @@ Deno.serve(async (req) => {
           body: JSON.stringify({
             model: 'gpt-4o-mini',
             messages: openaiMessages,
-            temperature: 0.7,
+            temperature: 0.4,
             max_tokens: 1024,
           }),
           signal: controller.signal,
@@ -427,31 +512,25 @@ Deno.serve(async (req) => {
       )
     }
 
-    // ── 7. Parse OpenAI response ───────────────────────────────────────────
+    // ── 8. Parse OpenAI response ───────────────────────────────────────────
 
     const openaiData = await openaiResponse.json()
     const choice = openaiData.choices?.[0]
     const assistantMessage: string =
       choice?.message?.content ?? 'Lo siento, no pude generar una respuesta.'
 
-    // ── 8. Log metadata (no conversation content) ──────────────────────────
+    // ── 9. Log metadata (no conversation content) ──────────────────────────
 
     const usage = openaiData.usage
     console.log(
       `[chat-tickets] user=${user_id} ts=${new Date().toISOString()} prompt_tokens=${usage?.prompt_tokens ?? '?'} completion_tokens=${usage?.completion_tokens ?? '?'} total_tokens=${usage?.total_tokens ?? '?'}`,
     )
 
-    // ── 9. Extract ticket_data if present ──────────────────────────────────
+    // ── 10. Extract ticket_data if present (validated against DB catalog) ───
 
-    const ticketData = extractTicketData(assistantMessage, clasificaciones)
+    const ticketData = extractTicketData(assistantMessage, validClasificaciones)
 
-    if (ticketData) {
-      console.log(
-        `[chat-tickets] ticket_data extracted | user=${user_id} area=${ticketData.area} clasif=${ticketData.clasificacion} prioridad=${ticketData.prioridad} confirmado=${ticketData.confirmado} dynamic=${usedDynamicClassifications}`,
-      )
-    }
-
-    // ── 10. Build and return response ──────────────────────────────────────
+    // ── 11. Build and return response ──────────────────────────────────────
 
     const responseBody: Record<string, unknown> = {
       message: assistantMessage,
@@ -469,4 +548,3 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'Error interno del servidor.' }, 500)
   }
 })
-
