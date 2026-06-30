@@ -125,7 +125,7 @@ Deno.serve(async (req) => {
         .eq('id', visita_id)
         .single()
 
-      const link = `${frontendUrl}/mis-visitas`
+      const link = `${frontendUrl}/ofertas/prospeccion/mis-visitas`
       messageText = `🗓 <b>Nueva Visita Asignada</b>\n\n`
       messageText += `📅 Fecha: ${visita?.fecha ?? 'Sin fecha'}\n`
       messageText += `📋 Tipo: ${visita?.tipo_visita ?? '—'}\n`
@@ -148,7 +148,7 @@ Deno.serve(async (req) => {
         .select('id', { count: 'exact', head: true })
         .eq('ruta_id', ruta_id)
 
-      const link = `${frontendUrl}/mis-visitas/${ruta_id}`
+      const link = `${frontendUrl}/ofertas/prospeccion/mis-visitas/${ruta_id}`
       messageText = `🗺 <b>Nueva Ruta Asignada</b>\n\n`
       messageText += `📌 Ruta: ${ruta?.nombre ?? '—'}\n`
       messageText += `📅 Periodo: ${ruta?.fecha_inicio ?? '?'} al ${ruta?.fecha_fin ?? '?'}\n`
