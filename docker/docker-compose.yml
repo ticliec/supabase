@@ -282,6 +282,8 @@ services:
       VERIFY_JWT: "${FUNCTIONS_VERIFY_JWT}"
       FACE_SERVICE_URL: ${FACE_SERVICE_URL:-}
       FACE_ADMIN_API_KEY: ${FACE_ADMIN_API_KEY:-}
+      # Telegram bot para Desarrollo de Negocios (visitas/rutas)
+      TELEGRAM_BOT_TOKEN_DN: ${TELEGRAM_BOT_TOKEN_DN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ERP_FRONTEND_ORIGIN: ${ERP_FRONTEND_ORIGIN:-*}
     command: ["start", "--main-service", "/home/deno/functions/main"]
