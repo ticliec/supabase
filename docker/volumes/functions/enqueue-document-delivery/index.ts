@@ -158,7 +158,7 @@ Deno.serve(async (req) => {
 
   if (uploadErr) {
     console.error('storage upload', uploadErr)
-    return new Response(JSON.stringify({ error: 'Storage upload failed' }), {
+    return new Response(JSON.stringify({ error: `Storage upload failed: ${uploadErr.message ?? JSON.stringify(uploadErr)}` }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
@@ -179,7 +179,7 @@ Deno.serve(async (req) => {
   if (insertErr) {
     console.error('job insert', insertErr)
     await admin.storage.from(BUCKET).remove([storagePath])
-    return new Response(JSON.stringify({ error: 'Failed to create delivery job' }), {
+    return new Response(JSON.stringify({ error: `Failed to create delivery job: ${insertErr.message ?? JSON.stringify(insertErr)}` }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
@@ -193,4 +193,3 @@ Deno.serve(async (req) => {
     { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
   )
 })
-
