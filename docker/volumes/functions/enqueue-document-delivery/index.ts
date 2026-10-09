@@ -19,11 +19,23 @@ const corsHeaders: Record<string, string> = {
 }
 
 const BUCKET = 'erp-doc-staging'
-const MAX_BYTES = 50 * 1024 * 1024
+const MAX_BYTES = 100 * 1024 * 1024
 
 function safeFilename(name: string): string {
-  const base = name.replace(/[/\\?%*:|"<>]/g, '_').trim() || 'document'
-  return base.slice(0, 200)
+  // Separar extensión del nombre base
+  const dotIdx = name.lastIndexOf('.')
+  const hasExt = dotIdx > 0 && dotIdx > name.length - 6  // extensión de hasta 5 chars
+  const basePart = hasExt ? name.slice(0, dotIdx) : name
+  const extPart = hasExt ? name.slice(dotIdx) : ''
+
+  const base = basePart
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // quitar acentos: É→E, ñ→n
+    .replace(/[/\\?%*:|"<>.]/g, '_')                    // incluye puntos intermedios
+    .replace(/\s+/g, '_')
+    .replace(/[^\x20-\x7E]/g, '_')                      // solo ASCII imprimible
+    .replace(/_{2,}/g, '_')
+    .trim() || 'document'
+  return (base + extPart).slice(0, 200)
 }
 
 Deno.serve(async (req) => {
@@ -92,10 +104,19 @@ Deno.serve(async (req) => {
   }
 
   if (file.size > MAX_BYTES) {
-    return new Response(JSON.stringify({ error: 'File too large' }), {
-      status: 413,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    const sizeMb = (file.size / (1024 * 1024)).toFixed(1)
+    const limitMb = Math.round(MAX_BYTES / (1024 * 1024))
+    return new Response(
+      JSON.stringify({
+        error: `File too large: ${sizeMb} MB (límite ${limitMb} MB)`,
+        size_bytes: file.size,
+        max_bytes: MAX_BYTES,
+      }),
+      {
+        status: 413,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      },
+    )
   }
 
   const documentKey = String(form.get('document_key') ?? '').trim()
@@ -193,3 +214,4 @@ Deno.serve(async (req) => {
     { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
   )
 })
+
